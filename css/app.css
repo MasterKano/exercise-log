@@ -126,6 +126,7 @@ svg{display:block;flex:none}
 .f:focus-within{border-color:#4a4a4e}
 .f span.u{font-size:13px;color:var(--g1);font-weight:500;flex:none}
 .f.w{flex-grow:1.25}.f.t{flex-grow:1.2}
+.f.fl{flex-grow:1.45}.f.fl span.u{font-size:12px}
 .f.var b{font-size:14px;font-weight:600}
 .f b.ph{color:#5a5a5e}
 .f.running{border-color:var(--accent)}
@@ -135,6 +136,15 @@ svg{display:block;flex:none}
 input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 .hint{font-size:13px;color:var(--t2);margin-top:6px;line-height:17px}
 .hint b{color:#fff}
+/* RIR / RPE one-line explanations */
+.fhelp{margin-top:5px;font-size:12.5px;line-height:16px;color:var(--g1)}
+.fhelp p{margin:0}
+.fhelp p + p{margin-top:3px}
+.fhelp b{color:var(--t2);font-weight:700;margin-right:3px;letter-spacing:.02em}
+.fhelp.ind{padding-left:36px}
+.fhelp.inr2{margin:0;padding:7px 14px 6px;border-bottom:.5px solid var(--sep)}
+.fhelp.insheet{margin:-2px 2px 4px}
+.fhelp.inpicker{margin:2px 2px 6px}
 .addrow{display:flex;gap:8px;margin:10px 16px 0}
 .addrow button{flex:1;min-height:46px;border-radius:14px;background:var(--card);color:var(--t2);font-size:15px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px}
 .finish{margin:18px 16px 0}

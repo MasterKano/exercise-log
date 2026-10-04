@@ -211,8 +211,8 @@ function fieldsHTML(key, it, v, r) {
   return `<div class="flds num">${f.map(x => {
     if (x === 'weight') return `<button class="f w" data-act="pickWeight" data-key="${key}" aria-label="weight">${v.weight != null ? `<b>${fmtNum(v.weight)}</b>` : '<b class="ph">–</b>'}<span class="u">kg</span>${arrow(bt.weight, 'weight')}</button>`;
     if (x === 'reps') return `<label class="f r"><input type="text" inputmode="decimal" enterkeyhint="done" data-key="${key}" data-f="reps" value="${v.reps ?? ''}" placeholder="${esc(ph)}" aria-label="reps"><span class="u">reps</span>${arrow(bt.reps, 'reps')}</label>`;
-    if (x === 'rir' || x === 'rpe') return `<label class="f i"><span class="u">${x.toUpperCase()}</span><input type="text" inputmode="decimal" enterkeyhint="done" data-key="${key}" data-f="${x}" value="${v[x] ?? ''}" aria-label="${x}"></label>`;
-    if (x === 'flights') return `<label class="f r"><input type="text" inputmode="numeric" data-key="${key}" data-f="flights" value="${v.flights ?? ''}" aria-label="flights"><span class="u">flights</span></label>`;
+    if (x === 'rir' || x === 'rpe') return `<label class="f i"><span class="u">${x.toUpperCase()}</span><input type="text" inputmode="decimal" enterkeyhint="done" data-key="${key}" data-f="${x}" value="${v[x] ?? ''}" aria-label="${x === 'rpe' ? 'RPE 1 to 10' : 'RIR'}"></label>`;
+    if (x === 'flights') return `<label class="f r fl"><input type="text" inputmode="numeric" data-key="${key}" data-f="flights" value="${v.flights ?? ''}" aria-label="flights"><span class="u">flights</span></label>`;
     if (x === 'time') return `<button class="f t${swRun ? ' running' : ''}" data-act="pickTime" data-key="${key}" aria-label="time"><b ${swRun ? 'data-clock="sw"' : ''}>${swRun ? fmtClock((now() - A.sw.startAt) / 1000) : v.timeSec != null ? fmtClock(v.timeSec) : '<span class="ph">0:00</span>'}</b><span class="u">${ic(P.timer, 15, '#8e8e93', 2)}</span>${arrow(bt.time, 'time')}</button>`;
     if (x === 'variant') return `<button class="f var" data-act="cycleVariant" data-key="${key}" aria-label="variant"><b>${esc(v.variant || (ex.variants || [])[0] || 'variant')}</b></button>`;
     return '';
@@ -231,6 +231,7 @@ function lastLine(it, r) {
   if (f.includes('reps') && l.reps != null) bits.push(`${l.reps}`);
   let s = bits.join(' × ');
   if (f.includes('time') && l.timeSec != null) s += (s ? ' · ' : '') + fmtClock(l.timeSec);
+  if (f.includes('flights') && l.flights != null) s += (s ? ' · ' : '') + `${fmtNum(l.flights)} flights`;
   if (f.includes('rir') && l.rir != null) s += ` · RIR ${l.rir}`;
   if (f.includes('rpe') && l.rpe != null) s += ` · RPE ${l.rpe}`;
   return `last: ${s || '–'}`;
@@ -239,6 +240,12 @@ export function targetText(t) {
   if (!t) return '';
   return [t.sx, t.tempo, t.intensity, t.rest && t.rest !== '/' ? t.rest : null].filter(Boolean).join(' · ');
 }
+// one-sentence RIR / RPE explanation, shown once per exercise block (or once per circuit round)
+export function fieldHelpHTML(fields, cls = '') {
+  const hs = ['rir', 'rpe'].filter(x => fields.includes(x));
+  return hs.length ? `<div class="fhelp ${cls}">${hs.map(x => `<p data-help="${x}"><b>${x.toUpperCase()}</b> ${esc(D.FIELD_HELP[x])}</p>`).join('')}</div>` : '';
+}
+const itemsFields = (items) => [...new Set(items.flatMap(it => fieldsOf(it)))];
 function hintHTML(it, indent = false) {
   const ex = D.exercise(it.exId); if (!ex) return '';
   const h = D.hint({ ...ex, fields: fieldsOf(it) }, it.target, it.last ? { sets: it.last.sets } : null);
@@ -279,7 +286,7 @@ function circuitHTML(b) {
       out += `<button class="card r1" data-act="toggleRound" data-r="${r}">${dn === n ? tick(true, 24) : `<span class="tick" style="width:24px;height:24px"></span>`}<b>Round ${r + 1}</b><span class="num">${dn}/${n}${dur ? ' · ' + dur : ''}</span>${ic(P.chevD, 16, '#5a5a5e', 2.4)}</button>`;
       continue;
     }
-    out += `<div class="card r2"><button class="r2h" style="width:100%" data-act="toggleRound" data-r="${r}"><b>Round ${r + 1}</b><span>${dn} of ${n} done</span></button>`;
+    out += `<div class="card r2"><button class="r2h" style="width:100%" data-act="toggleRound" data-r="${r}"><b>Round ${r + 1}</b><span>${dn} of ${n} done</span></button>${fieldHelpHTML(itemsFields(b.items), 'inr2')}`;
     for (const it of b.items) {
       const ex = D.exercise(it.exId) || { name: '?' }; const key = K(b, it, r); const v = A.vals[key];
       out += `<div class="ex" data-row="${key}"><div class="c"><div class="nmrow"><button class="nm" data-act="cue" data-b="${b.key}" data-i="${it.key}">${esc(ex.name)}</button><span style="flex:1"></span>${dotsBtn(b, it)}</div>
@@ -321,6 +328,7 @@ function singleHTML(b) {
   if (it.target && it.target.sets === 0) s += `<div class="tl">This week is not specified in the programme.</div>`;
   s += lastWeekLine(it);
   if (open) {
+    s += fieldHelpHTML(fieldsOf(it), 'ind');
     s += hintHTML(it, true);
     s += `<div class="sets">${Array.from({ length: b.rounds }, (_, r) => rowHTML(b, it, r, String(r + 1))).join('')}</div>`;
     s += `<div style="display:flex;gap:8px;margin-top:8px;padding-left:31px"><button class="mini" data-act="addRound" data-b="${b.key}">${ic(P.plus, 14)} Set</button>${b.rounds > 0 ? `<button class="mini" data-act="removeRound" data-b="${b.key}">${ic(P.minus, 14)} Set</button>` : ''}${all ? `<button class="mini" data-act="toggleBlk" data-b="${b.key}">Collapse</button>` : ''}</div>`;
@@ -341,6 +349,7 @@ function groupHTML(b) {
     s += lastWeekLine(it); if (open) s += hintHTML(it, true);
   });
   s += `</div></div>`;
+  if (open) s += fieldHelpHTML(itemsFields(b.items));
   if (b.roundsUnspecified && open) s += `<div class="tl nolead" style="margin-top:6px">Number of rounds isn't specified in the programme. Set your own below.</div>`;
   if (open) {
     for (let r = 0; r < b.rounds; r++) {
@@ -594,7 +603,9 @@ on('cycleVariant', (el) => {
 });
 export function onFieldInput(el) {
   if (!A) return; const key = el.dataset.key, f = el.dataset.f; const v = A.vals[key]; if (!v) return;
-  v[f] = num(el.value); refreshArrows(key);
+  v[f] = num(el.value);
+  if (f === 'rpe' && v.rpe != null) { const c = D.clampRpe(v.rpe); if (c !== v.rpe) { v.rpe = c; el.value = String(c); } }
+  refreshArrows(key);
   if (v.done) { const { b, it, r } = findRow(key); writeSet(b, it, r); }
   persist();
 }

@@ -8,6 +8,14 @@ const seedEx = new Map(), seedRt = new Map(), seedSeries = new Map(), seedProg =
 const progEx = new Set();
 const CONTENT_KEYS = ['exercises', 'routines', 'series', 'programmes', 'warmups'];
 
+// One-sentence helper text shown wherever RIR / RPE is logged or picked.
+export const FIELD_HELP = {
+  rir: 'Reps in reserve: how many more good reps you could have done before failure (0 = none left).',
+  rpe: 'Rate of perceived exertion: how hard the effort felt from 1 (very easy) to 10 (maximal).',
+};
+export const RPE_MIN = 1, RPE_MAX = 10;
+export const clampRpe = (v) => v == null || isNaN(v) ? null : Math.min(RPE_MAX, Math.max(RPE_MIN, v));
+
 export async function loadSeed() {
   const r = await fetch('./data/seed.json');
   BASE = await r.json();
@@ -169,6 +177,7 @@ export function setSummary(sets) {
     const bits = [];
     if (s.reps != null) bits.push(String(s.reps));
     if (s.timeSec != null) bits.push(`${s.timeSec} s`);
+    if (s.flights != null) bits.push(`${fmtNum(s.flights)} fl`);
     return bits.join(' ');
   };
   if (same && ws[0] != null) { const r = sets.map(part).filter(Boolean); return `${fmtNum(ws[0])} kg${r.length ? ' × ' + r.join(', ') : ''}`; }
@@ -242,6 +251,48 @@ export function weeklySummary(now = Date.now()) {
   return { sessions: wk.length, totalSec: total, bests, streak };
 }
 
+// ---------------- data migrations (run once per install, tracked in kv 'migrations')
+// stair-rpe-1: Stair climb logs RPE (1-10) instead of reps. Built-in definitions come from seed.json, so only
+// copies stored on the phone need fixing: an edited/custom stair exercise and exercises inside imported packs.
+// Logged sets are never touched, so old stair sets (reps, flights, time) still show in history.
+const isStair = (e) => !!e && (e.id === 'stair-climb' || /stair/i.test(e.name || ''));
+export function stairFields(fields) {
+  const f = (fields || []).map(x => (x === 'reps' ? 'rpe' : x));
+  if (!f.includes('rpe')) f.push('rpe');
+  return [...new Set(f)];
+}
+const sameArr = (a, b) => JSON.stringify(a || []) === JSON.stringify(b || []);
+function fixStairList(list) {
+  let n = 0;
+  const out = (list || []).map(e => { if (!isStair(e) || e.deleted) return e; const f = stairFields(e.fields); if (sameArr(f, e.fields)) return e; n++; return { ...e, fields: f }; });
+  return { out, n };
+}
+function migrateStairRpe() {
+  let n = 0;
+  for (const e of db.list('exercises')) {
+    if (e.deleted || !isStair(e)) continue;
+    const f = stairFields(e.fields);
+    if (!sameArr(f, e.fields)) { saveExercise({ ...e, fields: f }); n++; }
+  }
+  for (const r of db.list('kv')) {
+    if (!r.k.startsWith('pack:') || !r.v || !r.v.content) continue;
+    const { out, n: m } = fixStairList(r.v.content.exercises);
+    if (m) { db.put('kv', { k: r.k, v: { ...r.v, content: { ...r.v.content, exercises: out } } }); n += m; }
+  }
+  return n;
+}
+const MIGRATIONS = [['stair-rpe-1', migrateStairRpe]];
+export async function runMigrations() {
+  const done = new Set(db.kvGet('migrations', []) || []);
+  const ran = [];
+  for (const [id, fn] of MIGRATIONS) {
+    if (done.has(id)) continue;
+    try { ran.push([id, fn()]); done.add(id); } catch (e) { console.error('migration ' + id, e); }
+  }
+  if (ran.length) { db.kvSet('migrations', [...done]); await db.flush(); applyPacks(); }
+  return ran;
+}
+
 // ---------------- history import (seed or content pack)
 // Records get deterministic ids, and existing records (incl. ones you edited) are never overwritten,
 // so importing the same history twice adds nothing.
@@ -290,6 +341,7 @@ export async function importPack(d) {
   const before = { routines: new Set(SEED.routines.map(x => x.id)), exercises: new Set(SEED.exercises.map(x => x.id)) };
   const prev = db.kvGet('pack:' + d.id);
   const { history, ...rest } = d;
+  if (rest.content && rest.content.exercises) rest.content = { ...rest.content, exercises: fixStairList(rest.content.exercises).out };
   db.kvSet('pack:' + d.id, { ...rest, history: history ? { note: history.note || null, skipped: history.skipped || [], count: (history.items || []).length } : null,
     importedAt: Date.now(), firstImportedAt: prev?.firstImportedAt || prev?.importedAt || Date.now() });
   applyPacks();

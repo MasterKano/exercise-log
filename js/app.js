@@ -65,6 +65,7 @@ async function boot() {
   try {
     await db.init();
     await D.loadSeed();
+    await D.runMigrations();
     D.importSeedHistory();
     W.loadActive();
     if (!location.hash || location.hash === '#') location.replace(W.A ? '#/workout' : '#/today');

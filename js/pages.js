@@ -263,7 +263,7 @@ function setRowHTML(st, label, ex) {
   if (st.weight != null) v.push(`<b>${fmtNum(st.weight)}</b>kg`);
   if (st.reps != null) v.push(`${st.weight != null ? '<span class="x">×</span>' : ''}<b>${fmtNum(st.reps)}</b>${st.weight == null ? ' reps' : ''}`);
   if (st.timeSec != null) v.push(`${v.length ? '<span class="x">·</span>' : ''}<b>${fmtClock(st.timeSec)}</b>`);
-  if (st.flights != null) v.push(`<b>${st.flights}</b> flights`);
+  if (st.flights != null) v.push(`${v.length ? '<span class="x">·</span>' : ''}<b>${fmtNum(st.flights)}</b> flights`);
   if (st.variant) v.push(`<span style="margin-left:6px">${esc(st.variant)}</span>`);
   const right = st.rir != null ? `RIR <b>${fmtNum(st.rir)}</b>` : st.rpe != null ? `RPE <b>${fmtNum(st.rpe)}</b>` : '';
   return `<button class="sr num" data-act="editSet" data-id="${esc(st.id)}"><div class="rn">${esc(label)}</div><div class="v">${v.join('') || '<span>–</span>'}</div><div class="rir">${right}</div></button>`;
@@ -312,7 +312,8 @@ function setForm(ex, st, withDate = false) {
   const d = new Date(st.date || Date.now()); const dv = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   return ask(`<div class="sh-title">${esc(ex ? ex.name : st.exerciseName)}</div>
     ${withDate ? `<label class="field"><span>Date</span><input class="input" type="date" id="sf_date" value="${dv}"></label>` : `<p class="sh-body" style="margin:0 0 6px">${fmtDate(st.date)}${st.block ? ' · ' + esc(st.block) : ''}</p>`}
-    <div class="chkgrid">${fields.map(f => `<label class="field"><span>${lab[f]}</span><input class="input num" id="sf_${f}" ${f === 'variant' ? '' : 'inputmode="decimal"'} value="${esc(val(f))}"></label>`).join('')}</div>
+    <div class="chkgrid">${fields.map(f => `<label class="field"><span>${lab[f]}</span><input class="input num" id="sf_${f}" ${f === 'variant' ? '' : 'inputmode="decimal"'}${f === 'rpe' ? ' placeholder="1-10"' : ''} value="${esc(val(f))}"></label>`).join('')}</div>
+    ${W.fieldHelpHTML(fields, 'insheet')}
     <label class="field"><span>Note</span><input class="input" id="sf_note" value="${esc(st.note || '')}"></label>
     <button class="btn-primary mt8" data-act="sfSave" data-fields="${fields.join(',')}">Save</button>
     ${!withDate ? `<button class="btn-secondary danger mt8" data-act="resolveSheet" data-v="__delete">${ic(P.trash, 18)} Delete set</button>` : ''}`);
@@ -321,7 +322,7 @@ on('sfSave', (el) => {
   const sh = el.closest('.sheet'); const vals = {};
   for (const f of el.dataset.fields.split(',').filter(Boolean)) {
     const raw = sh.querySelector('#sf_' + f).value;
-    if (f === 'time') vals.timeSec = parseClock(raw); else if (f === 'variant') vals.variant = raw.trim() || null; else vals[f] = num(raw);
+    if (f === 'time') vals.timeSec = parseClock(raw); else if (f === 'variant') vals.variant = raw.trim() || null; else if (f === 'rpe') vals.rpe = D.clampRpe(num(raw)); else vals[f] = num(raw);
   }
   vals.note = sh.querySelector('#sf_note').value.trim() || null;
   const dt = sh.querySelector('#sf_date');
@@ -348,6 +349,7 @@ export function exerciseEdit(id) {
   const html = `<div class="nav"><a class="txtbtn dim" href="${id === 'new' ? '#/exercises' : '#/exercise/' + encodeURIComponent(id)}" data-act="exCancel">Cancel</a><div class="center">${id === 'new' ? 'New exercise' : 'Edit exercise'}</div><div class="right"><button class="txtbtn" style="color:var(--accent);font-weight:600" data-act="exSave">Save</button></div></div>
     <div class="form"><label class="field"><span>Name</span><input class="input" data-ee="name" value="${esc(e.name)}" placeholder="e.g. Goblet squat"></label>
     <div class="lbl2">Fields to log</div><div class="chkgrid">${Object.entries(FIELD_LABELS).map(([f, l]) => `<label class="chk"><input type="checkbox" data-ee="field" data-f="${f}" ${e.fields.includes(f) ? 'checked' : ''}> ${l}</label>`).join('')}</div>
+    ${W.fieldHelpHTML(['rir', 'rpe'], 'inpicker')}
     <label class="field"><span>Equipment (sets the weight picker)</span><select class="input" data-ee="equip">${[['', 'None / bodyweight'], ['kb', 'Kettlebell (12/16/20/24 kg)'], ['db', 'Dumbbell (2 kg steps)'], ['bb', 'Barbell (2.5 kg steps)'], ['machine', 'Machine / cable (2.5 kg steps)'], ['plate', 'Plates (2.5 kg steps)']].map(([v, l]) => `<option value="${v}" ${(e.equip || '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <label class="chk"><input type="checkbox" data-ee="eachSide" ${e.eachSide ? 'checked' : ''}> Each side</label>
     <div style="display:flex;gap:10px"><label class="field" style="flex:1"><span>Rest (seconds)</span><input class="input num" inputmode="numeric" data-ee="rest" value="${e.rest ?? ''}"></label>
