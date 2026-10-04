@@ -6,6 +6,7 @@ import { esc, uid, num, fmtNum, fmtClock, parseClock, fmtDate, fmtDur, relDay } 
 import { ic, P, tick, on, openSheet, closeSheet, ask, confirmSheet, actionSheet, toast, go, A_COLOR } from './ui.js';
 import { beepWarn, beepEnd, setWake, onTick, unlockAudio } from './timers.js';
 import * as sync from './sync.js';
+import { pickWheels, range, FMT, wheelValues } from './wheel.js';
 
 export let A = null;
 let renderFn = () => {};
@@ -27,25 +28,74 @@ export function elapsedSec(s = A) {
 }
 
 // ---------------------------------------------------------------- knee check-in
+// default knee value: last logged (before: last "before"; after: today's "before" or last "after"), else average, else 0
+function kneeDefault(phase) {
+  if (phase === 'after' && A && A.kneeBefore != null) return A.kneeBefore;
+  const k = phase === 'after' ? 'kneeAfter' : 'kneeBefore';
+  const vals = D.sessions().map(s => s[k]).filter(v => v != null);
+  return vals.length ? vals[0] : 0;
+}
 export function kneeSheet(phase, { notes = false, initial = null, title } = {}) {
-  const btns = Array.from({ length: 11 }, (_, n) => `<button data-act="kneePick" data-v="${n}" class="${initial === n ? 'on' : ''}">${n}</button>`).join('');
-  return ask(`<div class="eyebrow">Knee check-in · ${phase}</div><div class="sh-title">${esc(title || (phase === 'before' ? 'How is the knee before you start?' : 'How is the knee now?'))}</div>
-    <div class="knee num">${btns}</div><div class="kscale"><span>0 = no pain</span><span>10 = worst</span></div>
+  const v = initial ?? kneeDefault(phase);
+  return pickWheels({ eyebrow: `Knee check-in · ${phase}`, title: title || (phase === 'before' ? 'How is the knee before you start?' : 'How is the knee now?'), cls: 'kneesheet',
+    wheels: [{ id: 'knee', values: range(0, 10), value: v, label: 'Knee pain 0 to 10' }],
+    bottom: `<div class="kscale"><span>0 = no pain</span><span>10 = worst</span></div>
     ${notes ? `<label class="field"><span>Session notes (optional)</span><textarea class="input" id="finNotes" rows="2" placeholder="How did it go?"></textarea></label>` : ''}
     <button class="btn-primary" data-act="kneeSave">${phase === 'before' ? 'Start' : phase === 'edit' ? 'Save' : 'Save session'}</button>
-    <button class="btn-secondary mt8" data-act="kneeSkip">${phase === 'edit' ? 'Clear' : 'Skip check-in'}</button>`, { cls: 'kneesheet' });
+    <button class="btn-secondary mt8" data-act="kneeSkip">${phase === 'edit' ? 'Clear' : 'Skip check-in'}</button>` });
 }
-on('kneePick', (el) => { const sh = el.closest('.sheet'); sh.querySelectorAll('.knee button').forEach(b => b.classList.toggle('on', b === el)); sh.dataset.v = el.dataset.v; });
-on('kneeSave', (el) => { const sh = el.closest('.sheet'); const n = sh.querySelector('#finNotes'); closeSheet({ knee: sh.dataset.v != null ? +sh.dataset.v : null, notes: n ? n.value.trim() : '' }); });
+on('kneeSave', (el) => { const sh = el.closest('.sheet'); const n = sh.querySelector('#finNotes'); closeSheet({ knee: wheelValueOf(sh), notes: n ? n.value.trim() : '' }); });
 on('kneeSkip', (el) => { const sh = el.closest('.sheet'); const n = sh.querySelector('#finNotes'); closeSheet({ knee: null, notes: n ? n.value.trim() : '' }); });
 
 // ---------------------------------------------------------------- building a session
-function targetReps(t) { const r = t && t.reps; return r && /^\d+$/.test(String(r)) ? +r : null; }
+// ---- defaults for a new set: last logged value for that set -> average of the exercise's history -> starter value
+const NUMF = ['weight', 'reps', 'rir', 'rpe', 'timeSec', 'flights'];
+const FIELD_OF = { timeSec: 'time' };
+function histAvg(exId) {
+  const acc = {};
+  for (const h of D.exerciseHistory(exId)) for (const st of h.sets) for (const f of NUMF) if (st[f] != null) (acc[f] = acc[f] || []).push(st[f]);
+  const out = {}; for (const f in acc) out[f] = acc[f].reduce((a, b) => a + b, 0) / acc[f].length;
+  return out;
+}
+// "5" -> 5, "8-12" -> 8 (bottom of the range), "3 each leg" / "5/arm" -> 3 / 5; "Max reps", "myorep", "30 sec" -> null
+function targetReps(t) { const m = String((t && t.reps) || '').trim().match(/^(\d+)(?:\s*-\s*\d+)?(?:\s*(?:each (?:leg|side|arm)|\/(?:arm|leg|side)))?$/i); return m ? +m[1] : null; }
+function targetSecs(t) { const m = String((t && t.reps) || '').match(/^(\d+)\s*sec/i); return m ? +m[1] : null; }
+export function starterVal(ex, f, target, fields) {
+  if (!fields.includes(FIELD_OF[f] || f)) return null;
+  if (f === 'reps') return target && target.reps ? targetReps(target) : 10;
+  if (f === 'weight') return D.starterWeight(ex.equip);
+  if (f === 'rir') return 2;
+  if (f === 'rpe') return 7;
+  if (f === 'flights') return 15;
+  if (f === 'timeSec') { const ts = targetSecs(target); if (ts) return ts; if (fields.includes('reps')) return null; return fields.includes('flights') ? 300 : 30; }
+  return null;
+}
+function roundFor(ex, f, x) {
+  if (x == null) return null;
+  if (f === 'weight') return D.snapWeight(ex.equip, x);
+  if (f === 'timeSec') return Math.round(x / 5) * 5;
+  return Math.round(x);
+}
+function defaultVal(last, ex, f, r, target, fields) {
+  const s = last && last.sets ? last.sets[r] : null;
+  if (s && s[f] != null) return [s[f], 'last'];
+  const a = last && last.avg ? last.avg[f] : null;
+  if (a != null) return [roundFor(ex, f, a), 'avg'];
+  const st = starterVal(ex, f, target, fields);
+  return st == null ? [null, null] : [st, 'start'];
+}
 function snapshotLast(exId, routineId, week) {
   const l = week ? D.lastWeekSets(exId, routineId, week) : D.lastSets(exId);
   if (!l) return null;
-  return { date: l.session.startedAt, week: l.session.week || null, routineId: l.session.routineId,
+  return { date: l.session.startedAt, week: l.session.week || null, routineId: l.session.routineId, avg: histAvg(exId),
     sets: l.sets.map(s => ({ weight: s.weight, reps: s.reps, rir: s.rir, rpe: s.rpe, timeSec: s.timeSec, flights: s.flights, variant: s.variant })) };
+}
+// defaults for "Log a set by hand" (set 1, no programme target)
+export function defaultSet(exId) {
+  const ex = D.exercise(exId); if (!ex) return { vals: {}, src: {} };
+  const last = snapshotLast(exId); const vals = {}, src = {};
+  for (const f of NUMF) { if (!ex.fields.includes(FIELD_OF[f] || f)) continue; const [x, s2] = defaultVal(last, ex, f, 0, null, ex.fields); vals[f] = x; if (s2) src[f] = s2; }
+  return { vals, src };
 }
 function mkItem(key, exId, label, target, extra = {}) {
   const ex = D.exercise(exId);
@@ -90,12 +140,26 @@ function prefillBlock(b) {
 }
 function prefillRow(b, it, r, force = false) {
   const k = K(b, it, r); if (A.vals[k] && (A.vals[k].done || !force)) return;
-  const ex = D.exercise(it.exId) || { fields: ['reps'], variants: [] };
+  const ex = D.exercise(it.exId) || { fields: ['reps'], variants: [] }; const fields = fieldsOf(it);
   const ls = it.last ? it.last.sets : [];
-  const src = ls[r] || ls[ls.length - 1] || null;
-  A.vals[k] = { weight: src?.weight ?? null, reps: src?.reps ?? targetReps(it.target), rir: src?.rir ?? null, rpe: src?.rpe ?? null,
-    timeSec: src?.timeSec ?? null, flights: src?.flights ?? null, variant: src?.variant ?? (ex.variants && ex.variants[0]) ?? null, done: false };
+  const v = { weight: null, reps: null, rir: null, rpe: null, timeSec: null, flights: null, done: false, src: {} };
+  for (const f of NUMF) { const [x, s2] = defaultVal(it.last, ex, f, r, it.target, fields); v[f] = x; if (s2) v.src[f] = s2; }
+  v.variant = ls[r]?.variant ?? ls[ls.length - 1]?.variant ?? (ex.variants && ex.variants[0]) ?? null;
+  A.vals[k] = v;
 }
+// a value the user picked on one set is copied to the later unticked sets of that exercise, unless those were set by hand
+function setVal(b, it, r, f, x) {
+  const v = A.vals[K(b, it, r)]; if (!v) return 0;
+  v[f] = x; (v.src = v.src || {})[f] = 'user';
+  if (v.done) writeSet(b, it, r);
+  let n = 0;
+  for (let rr = r + 1; rr < b.rounds; rr++) {
+    const w = A.vals[K(b, it, rr)]; if (!w || w.done || (w.src && w.src[f] === 'user')) continue;
+    w[f] = x; (w.src = w.src || {})[f] = 'copy'; n++;
+  }
+  return n;
+}
+const isPre = (v, f) => !!(v && !v.done && v.src && v.src[f] && v.src[f] !== 'user');
 export function fieldsOf(it) { const ex = D.exercise(it.exId); return it.fields || (ex ? ex.fields : ['reps']); }
 
 export async function startRoutine(rid, opts = {}) {
@@ -120,7 +184,8 @@ export async function startRoutine(rid, opts = {}) {
   } else if (r.kind === 'followalong') {
     const sr = D.series(r.series); const n = opts.seriesNum || D.nextSeriesNum(r.series); const s = sr.sessions[n - 1];
     A.title = `${sr.short} · Workout ${n}`; A.subtitle = s.title;
-    A.fa = { sid: sr.id, num: n, startAt: null, accum: 0, running: false, manualSec: null, rounds: 0, effort: null, notes: '', splits: [], forTimeSec: null };
+    A.fa = { sid: sr.id, num: n, startAt: null, accum: 0, running: false, manualSec: null, rounds: 0, effort: null, notes: '', splits: [], forTimeSec: null, src: {} };
+    faDefaults(A.fa);
   } else {
     A.blocks = buildBlocks(r, week, opts.rounds);
     A.blocks.forEach(prefillBlock);
@@ -170,6 +235,7 @@ function valSummary(it, v) {
   if (f.includes('weight') && v.weight != null) bits.push(`${fmtNum(v.weight)} kg`);
   if (f.includes('reps') && v.reps != null) bits.push(`${fmtNum(v.reps)}`);
   if (f.includes('time') && v.timeSec != null) bits.push(fmtClock(v.timeSec));
+  if (f.includes('flights') && v.flights != null) bits.push(`${fmtNum(v.flights)} flights`);
   return bits.join(' × ');
 }
 function startRest(sec, nextRow) {
@@ -185,7 +251,6 @@ function toggleTick(key) {
     A.rest = null;
   } else {
     v.done = true; v.tickedAt = now(); writeSet(b, it, r);
-    for (let rr = r + 1; rr < b.rounds; rr++) { const w = A.vals[K(b, it, rr)]; if (w && !w.done && w.weight == null && v.weight != null) w.weight = v.weight; }
     const rows = orderedRows(); const idx = rows.findIndex(x => x.b === b && x.it === it && x.r === r);
     const next = rows.slice(idx + 1).find(x => !A.vals[K(x.b, x.it, x.r)]?.done) || rows.find(x => !A.vals[K(x.b, x.it, x.r)]?.done);
     if (next) startRest(restAfter(b, it), next); else { A.rest = null; toast('All sets done. Tap Finish when ready.'); }
@@ -208,12 +273,14 @@ function fieldsHTML(key, it, v, r) {
   let ph = it.target && it.target.reps ? String(it.target.reps).replace(/^Max reps$/i, 'max').replace(/ each leg|\/arm|\/leg/g, '') : '';
   if (ph.length > 5) ph = '';
   const swRun = A.sw && A.sw.key === key;
+  const pc = (fl) => (isPre(v, fl) ? ' pre' : '');
+  const val = (x, phTxt = '–') => (v[x] != null ? `<b>${fmtNum(v[x])}</b>` : `<b class="ph">${esc(phTxt)}</b>`);
   return `<div class="flds num">${f.map(x => {
-    if (x === 'weight') return `<button class="f w" data-act="pickWeight" data-key="${key}" aria-label="weight">${v.weight != null ? `<b>${fmtNum(v.weight)}</b>` : '<b class="ph">–</b>'}<span class="u">kg</span>${arrow(bt.weight, 'weight')}</button>`;
-    if (x === 'reps') return `<label class="f r"><input type="text" inputmode="decimal" enterkeyhint="done" data-key="${key}" data-f="reps" value="${v.reps ?? ''}" placeholder="${esc(ph)}" aria-label="reps"><span class="u">reps</span>${arrow(bt.reps, 'reps')}</label>`;
-    if (x === 'rir' || x === 'rpe') return `<label class="f i"><span class="u">${x.toUpperCase()}</span><input type="text" inputmode="decimal" enterkeyhint="done" data-key="${key}" data-f="${x}" value="${v[x] ?? ''}" aria-label="${x === 'rpe' ? 'RPE 1 to 10' : 'RIR'}"></label>`;
-    if (x === 'flights') return `<label class="f r fl"><input type="text" inputmode="numeric" data-key="${key}" data-f="flights" value="${v.flights ?? ''}" aria-label="flights"><span class="u">flights</span></label>`;
-    if (x === 'time') return `<button class="f t${swRun ? ' running' : ''}" data-act="pickTime" data-key="${key}" aria-label="time"><b ${swRun ? 'data-clock="sw"' : ''}>${swRun ? fmtClock((now() - A.sw.startAt) / 1000) : v.timeSec != null ? fmtClock(v.timeSec) : '<span class="ph">0:00</span>'}</b><span class="u">${ic(P.timer, 15, '#8e8e93', 2)}</span>${arrow(bt.time, 'time')}</button>`;
+    if (x === 'weight') return `<button class="f w${pc('weight')}" data-act="pickWeight" data-key="${key}" aria-label="weight">${val('weight')}<span class="u">kg</span>${arrow(bt.weight, 'weight')}</button>`;
+    if (x === 'reps') return `<button class="f r${pc('reps')}" data-act="pickNum" data-key="${key}" data-f="reps" aria-label="reps">${val('reps', ph || '–')}<span class="u">reps</span>${arrow(bt.reps, 'reps')}</button>`;
+    if (x === 'rir' || x === 'rpe') return `<button class="f i${pc(x)}" data-act="pickNum" data-key="${key}" data-f="${x}" aria-label="${x === 'rpe' ? 'RPE 1 to 10' : 'RIR'}"><span class="u">${x.toUpperCase()}</span>${val(x)}</button>`;
+    if (x === 'flights') return `<button class="f r fl${pc('flights')}" data-act="pickNum" data-key="${key}" data-f="flights" aria-label="flights">${val('flights')}<span class="u">flights</span></button>`;
+    if (x === 'time') return `<button class="f t${swRun ? ' running' : ''}${pc('timeSec')}" data-act="pickTime" data-key="${key}" aria-label="time"><b ${swRun ? 'data-clock="sw"' : ''}>${swRun ? fmtClock((now() - A.sw.startAt) / 1000) : v.timeSec != null ? fmtClock(v.timeSec) : '<span class="ph">0:00</span>'}</b><span class="u">${ic(P.timer, 15, '#8e8e93', 2)}</span>${arrow(bt.time, 'time')}</button>`;
     if (x === 'variant') return `<button class="f var" data-act="cycleVariant" data-key="${key}" aria-label="variant"><b>${esc(v.variant || (ex.variants || [])[0] || 'variant')}</b></button>`;
     return '';
   }).join('')}</div>`;
@@ -232,8 +299,8 @@ function lastLine(it, r) {
   let s = bits.join(' × ');
   if (f.includes('time') && l.timeSec != null) s += (s ? ' · ' : '') + fmtClock(l.timeSec);
   if (f.includes('flights') && l.flights != null) s += (s ? ' · ' : '') + `${fmtNum(l.flights)} flights`;
-  if (f.includes('rir') && l.rir != null) s += ` · RIR ${l.rir}`;
-  if (f.includes('rpe') && l.rpe != null) s += ` · RPE ${l.rpe}`;
+  if (l.rir != null) s += ` · RIR ${fmtNum(l.rir)}`;
+  if (l.rpe != null) s += ` · RPE ${fmtNum(l.rpe)}`;
   return `last: ${s || '–'}`;
 }
 export function targetText(t) {
@@ -246,6 +313,14 @@ export function fieldHelpHTML(fields, cls = '') {
   return hs.length ? `<div class="fhelp ${cls}">${hs.map(x => `<p data-help="${x}"><b>${x.toUpperCase()}</b> ${esc(D.FIELD_HELP[x])}</p>`).join('')}</div>` : '';
 }
 const itemsFields = (items) => [...new Set(items.flatMap(it => fieldsOf(it)))];
+const SRC_TXT = { last: 'last time', avg: 'your average', start: 'starter values', copy: 'your earlier set' };
+function preCaption(b, its, indent) {
+  const seen = new Set();
+  for (const it of its) for (let r = 0; r < b.rounds; r++) { const v = A.vals[K(b, it, r)]; if (!v || v.done) continue; for (const f of fieldsOf(it)) { const k = f === 'time' ? 'timeSec' : f; if (isPre(v, k)) seen.add(v.src[k]); } }
+  if (!seen.size) return '';
+  const order = ['last', 'avg', 'copy', 'start'].filter(x => seen.has(x)).map(x => SRC_TXT[x]);
+  return `<div class="tl pretl${indent ? '' : ' nolead'}"><i class="predot"></i>Pre-filled from ${esc(order.join(' / '))} · tap to change, tick to confirm</div>`;
+}
 function hintHTML(it, indent = false) {
   const ex = D.exercise(it.exId); if (!ex) return '';
   const h = D.hint({ ...ex, fields: fieldsOf(it) }, it.target, it.last ? { sets: it.last.sets } : null);
@@ -286,7 +361,8 @@ function circuitHTML(b) {
       out += `<button class="card r1" data-act="toggleRound" data-r="${r}">${dn === n ? tick(true, 24) : `<span class="tick" style="width:24px;height:24px"></span>`}<b>Round ${r + 1}</b><span class="num">${dn}/${n}${dur ? ' · ' + dur : ''}</span>${ic(P.chevD, 16, '#5a5a5e', 2.4)}</button>`;
       continue;
     }
-    out += `<div class="card r2"><button class="r2h" style="width:100%" data-act="toggleRound" data-r="${r}"><b>Round ${r + 1}</b><span>${dn} of ${n} done</span></button>${fieldHelpHTML(itemsFields(b.items), 'inr2')}`;
+    const pcap = (() => { const c = b.items.some(it => fieldsOf(it).some(f => isPre(A.vals[K(b, it, r)], f === 'time' ? 'timeSec' : f))); return c ? `<div class="tl pretl inr2"><i class="predot"></i>Dashed = pre-filled · tap to change, tick to confirm</div>` : ''; })();
+    out += `<div class="card r2"><button class="r2h" style="width:100%" data-act="toggleRound" data-r="${r}"><b>Round ${r + 1}</b><span>${dn} of ${n} done</span></button>${fieldHelpHTML(itemsFields(b.items), 'inr2')}${pcap}`;
     for (const it of b.items) {
       const ex = D.exercise(it.exId) || { name: '?' }; const key = K(b, it, r); const v = A.vals[key];
       out += `<div class="ex" data-row="${key}"><div class="c"><div class="nmrow"><button class="nm" data-act="cue" data-b="${b.key}" data-i="${it.key}">${esc(ex.name)}</button><span style="flex:1"></span>${dotsBtn(b, it)}</div>
@@ -329,6 +405,7 @@ function singleHTML(b) {
   s += lastWeekLine(it);
   if (open) {
     s += fieldHelpHTML(fieldsOf(it), 'ind');
+    s += preCaption(b, [it], true);
     s += hintHTML(it, true);
     s += `<div class="sets">${Array.from({ length: b.rounds }, (_, r) => rowHTML(b, it, r, String(r + 1))).join('')}</div>`;
     s += `<div style="display:flex;gap:8px;margin-top:8px;padding-left:31px"><button class="mini" data-act="addRound" data-b="${b.key}">${ic(P.plus, 14)} Set</button>${b.rounds > 0 ? `<button class="mini" data-act="removeRound" data-b="${b.key}">${ic(P.minus, 14)} Set</button>` : ''}${all ? `<button class="mini" data-act="toggleBlk" data-b="${b.key}">Collapse</button>` : ''}</div>`;
@@ -349,14 +426,14 @@ function groupHTML(b) {
     s += lastWeekLine(it); if (open) s += hintHTML(it, true);
   });
   s += `</div></div>`;
-  if (open) s += fieldHelpHTML(itemsFields(b.items));
+  if (open) s += fieldHelpHTML(itemsFields(b.items)) + preCaption(b, b.items, false);
   if (b.roundsUnspecified && open) s += `<div class="tl nolead" style="margin-top:6px">Number of rounds isn't specified in the programme. Set your own below.</div>`;
   if (open) {
     for (let r = 0; r < b.rounds; r++) {
       const dn = b.items.filter(it => A.vals[K(b, it, r)]?.done).length;
       s += `<div class="rlabel"><span>Round ${r + 1}</span><span>${dn}/${n}</span></div>` + b.items.map(it => rowHTML(b, it, r, it.label)).join('');
     }
-    s += `<div style="display:flex;gap:8px;margin-top:10px;align-items:center"><span class="muted" style="font-size:13px">Rounds</span><div class="stepper"><button data-act="removeRound" data-b="${b.key}" aria-label="Fewer rounds">${ic(P.minus, 16)}</button><b class="num">${b.rounds}</b><button data-act="addRound" data-b="${b.key}" aria-label="More rounds">${ic(P.plus, 16)}</button></div><span style="flex:1"></span>${all ? `<button class="mini" data-act="toggleBlk" data-b="${b.key}">Collapse</button>` : ''}</div>`;
+    s += `<div style="display:flex;gap:8px;margin-top:10px;align-items:center"><span class="muted" style="font-size:13px">Rounds</span><div class="stepper"><button data-act="removeRound" data-b="${b.key}" aria-label="Fewer rounds">${ic(P.minus, 16)}</button><button class="stepv num" data-act="roundsPick" data-b="${b.key}" aria-label="Pick number of rounds">${b.rounds}</button><button data-act="addRound" data-b="${b.key}" aria-label="More rounds">${ic(P.plus, 16)}</button></div><span style="flex:1"></span>${all ? `<button class="mini" data-act="toggleBlk" data-b="${b.key}">Collapse</button>` : ''}</div>`;
   } else s += `<button class="mini" style="margin-top:8px" data-act="toggleBlk" data-b="${b.key}">${ic(P.check, 14, A_COLOR, 3)} ${b.rounds} rounds done · edit</button>`;
   return s + `</div>`;
 }
@@ -447,6 +524,7 @@ function faElapsed() { const f = A.fa; return (f.accum || 0) + (f.running && !A.
 function faBest(sid, n) { let b = null; for (const s of D.sessions()) if (s.series === sid && s.seriesNum === n && s.forTimeSec) b = b == null ? s.forTimeSec : Math.min(b, s.forTimeSec); return b; }
 function viewFollow() {
   const f = A.fa, sr = D.series(f.sid), s = sr.sessions[f.num - 1];
+  const faPre = (k) => (f.src && f.src[k] && f.src[k] !== 'user' ? ' pre' : '');
   const dur = f.manualSec != null ? f.manualSec : faElapsed();
   const combos = s.combos.map((c, i) => s.forTime
     ? `<button class="combo${f.splits[i] ? ' ticked' : ''}" data-act="faCombo" data-i="${i}"><span class="n">${f.splits[i] ? ic(P.check, 13, '#000', 3) : i + 1}</span><span class="tx">${esc(c)}</span>${f.splits[i] ? `<span class="split num">${fmtClock(f.splits[i])}</span>` : ''}</button>`
@@ -464,8 +542,8 @@ function viewFollow() {
     <div class="vbtns">${vb}</div>
     <div class="duo"><div class="blk"><div class="lbl3">Duration</div><button class="dur num" data-act="faDurEdit" aria-label="Edit duration"><span style="font-size:40px;color:#fff;font-weight:700;letter-spacing:-1px" data-clock="fa">${fmtClock(dur)}</span><span>min</span></button>
       <div class="durctl"><button data-act="faRun">${f.running ? 'Pause' : (f.accum || f.manualSec != null) ? 'Resume' : 'Start timer'}</button></div></div>
-      <div class="blk"><div class="lbl3">Rounds done</div><div class="step num"><button data-act="faRounds" data-d="-1" aria-label="Fewer rounds">${ic(P.minus, 18, '#fff', 2.6)}</button><b>${f.rounds}</b><button data-act="faRounds" data-d="1" aria-label="More rounds">${ic(P.plus, 18, '#fff', 2.6)}</button></div></div></div>
-    <div class="blk"><div class="lbl3">Effort<span>${f.effort ? f.effort + ' / 10' : 'tap 1-10'}</span></div><div class="eff num">${Array.from({ length: 10 }, (_, i) => `<button class="${f.effort === i + 1 ? 'on' : ''}" data-act="faEffort" data-v="${i + 1}">${i + 1}</button>`).join('')}</div></div>
+      <div class="blk"><div class="lbl3">Rounds done</div><div class="step num"><button data-act="faRounds" data-d="-1" aria-label="Fewer rounds">${ic(P.minus, 18, '#fff', 2.6)}</button><button class="wv${faPre('rounds')}" data-act="faRoundsPick" aria-label="Pick rounds done"><b>${f.rounds}</b></button><button data-act="faRounds" data-d="1" aria-label="More rounds">${ic(P.plus, 18, '#fff', 2.6)}</button></div></div></div>
+    <div class="blk"><div class="lbl3">Effort<span>1 = very easy · 10 = maximal</span></div><button class="effv num${faPre('effort')}" data-act="faEffortPick" aria-label="Pick effort 1 to 10"><b>${f.effort ?? '–'}</b><span>/ 10</span>${faPre('effort') ? '<small>pre-filled · tap to change</small>' : ''}</button></div>
     <textarea class="notes2" rows="2" placeholder="Add notes..." data-fa="notes">${esc(f.notes)}</textarea>
     <button class="btn-primary save" data-act="faSave">${ic(P.check, 19, '#000', 3)} Save session</button></div>`;
   return { html, noTab: true };
@@ -526,35 +604,43 @@ export function cueSheet(exId, ctx = {}) {
 function hostOf(u) { try { return new URL(u).hostname.replace('www.', ''); } catch (e) { return ''; } }
 on('editExFromCue', (el) => { closeSheet(); go('#/exercise-edit/' + encodeURIComponent(el.dataset.id)); });
 
-export function weightSheet(ex, cur, { applyOpt = true } = {}) {
-  const eq = ex.equip; const bells = D.equipment().kb.slice().sort((a, b) => a - b);
-  const html = `<div class="eyebrow">${esc(D.equipLabel(eq) || 'weight')}</div><div class="sh-title">${esc(ex.name)}</div>
-    <div class="bigval num"><span id="wv">${cur != null ? fmtNum(cur) : '–'}</span><small>kg</small></div>
-    ${eq === 'kb' ? `<div class="chips num">${bells.map(b => `<button data-act="wChip" data-v="${b}" class="${cur === b ? 'on' : ''}">${b}<small>kg</small></button>`).join('')}</div>` : ''}
-    <div class="bigstep"><button data-act="wStep" data-d="-1" aria-label="Lighter">${ic(P.minus, 26, '#fff', 2.6)}</button><div class="muted" style="text-align:center;font-size:14px">${eq === 'kb' ? 'next bell' : `${fmtNum(D.weightStep(eq))} kg steps`}</div><button data-act="wStep" data-d="1" aria-label="Heavier">${ic(P.plus, 26, '#fff', 2.6)}</button></div>
-    <label class="field"><span>Or type any weight (kg)</span><input class="input num" id="wtype" type="text" inputmode="decimal" value="${cur != null ? fmtNum(cur) : ''}" placeholder="e.g. 18"></label>
-    ${applyOpt ? `<label class="chk"><input type="checkbox" id="wall" checked> Also use for the remaining sets</label>` : ''}
-    <button class="btn-primary mt8" data-act="wDone">Done</button>`;
-  return new Promise(res => { const sh = openSheet(html, { onClose: res }); sh.dataset.w = cur ?? ''; sh.dataset.eq = eq || ''; });
+export function weightSheet(ex, cur, { title } = {}) {
+  const eq = ex.equip;
+  const values = eq === 'kb' ? D.equipment().kb.slice().sort((a, b) => a - b) : range(0, D.maxWeight(eq), 0.5);
+  const v = cur ?? D.starterWeight(eq) ?? 20;
+  return pickWheels({ eyebrow: D.equipLabel(eq) || 'weight', title: title || ex.name, cls: 'wtsheet',
+    wheels: [{ id: 'weight', values, value: v, unit: 'kg', fmt: FMT.kg, label: 'Weight in kg' }],
+    step: eq && eq !== 'kb' ? { label: `${fmtNum(D.weightStep(eq))} kg steps`, fn: (w, d) => D.stepWeight(eq, w, d) } : null,
+  }).then(r => (r && r.values ? { w: r.values[0] } : r && r.clear ? { w: null } : null));
 }
-function wSet(sh, v) {
-  sh.dataset.w = v ?? ''; sh.querySelector('#wv').textContent = v != null ? fmtNum(v) : '–'; sh.querySelector('#wtype').value = v != null ? fmtNum(v) : '';
-  sh.querySelectorAll('.chips button').forEach(b => b.classList.toggle('on', +b.dataset.v === v));
+const mmss = (sec) => [Math.floor((sec || 0) / 60), Math.round(sec || 0) % 60];
+function timeWheels(sec, maxMin = 99) { const [m, s2] = mmss(sec); return [{ id: 'm', values: range(0, Math.max(maxMin, m)), value: m, unit: 'min', label: 'Minutes' }, { id: 's', values: range(0, 59), value: s2, unit: 'sec', fmt: FMT.pad2, label: 'Seconds' }]; }
+const secOf = (vals) => vals[0] * 60 + vals[1];
+// duration in m:ss wheels -> seconds (or null if dismissed)
+export function durationSheet(sec, title = 'Duration', maxMin = 180) {
+  return pickWheels({ title, wheels: timeWheels(sec, maxMin), sep: ':', doneLabel: 'Save' }).then(r => (r && r.values ? secOf(r.values) : null));
 }
-on('wChip', (el) => wSet(el.closest('.sheet'), +el.dataset.v));
-on('wStep', (el) => { const sh = el.closest('.sheet'); const c = num(sh.querySelector('#wtype').value); wSet(sh, D.stepWeight(sh.dataset.eq, c ?? 0, +el.dataset.d)); });
-on('wDone', (el) => { const sh = el.closest('.sheet'); const typed = num(sh.querySelector('#wtype').value); const all = sh.querySelector('#wall'); closeSheet({ w: typed, all: all ? all.checked : false }); });
-
+// one number wheel for reps / RIR / RPE / flights / rounds
+export const NUM_SPEC = {
+  reps: { label: 'Reps', values: range(0, 100), dflt: 10, unit: 'reps' }, rir: { label: 'RIR', values: range(0, 10), dflt: 2, unit: 'RIR' },
+  rpe: { label: 'RPE', values: range(1, 10), dflt: 7, unit: 'RPE' }, flights: { label: 'Flights', values: range(0, 200), dflt: 15, unit: 'flights' },
+  rounds: { label: 'Rounds', values: range(1, 20), dflt: 3, unit: 'rounds' }, roundsDone: { label: 'Rounds done', values: range(0, 30), dflt: 3, unit: 'rounds' },
+  effort: { label: 'Effort', values: range(1, 10), dflt: 7, unit: '/ 10' },
+};
+export function numSheet(f, cur, { eyebrow = '', title, clear = false } = {}) {
+  const sp = NUM_SPEC[f];
+  return pickWheels({ eyebrow, title: title || sp.label, clear, wheels: [{ id: f, values: sp.values, value: cur ?? sp.dflt, unit: sp.unit, label: sp.label }],
+    help: f === 'rir' || f === 'rpe' ? `<b>${f.toUpperCase()}</b> ${esc(D.FIELD_HELP[f])}` : null });
+}
 export function timeSheet(title, key) {
   const v = A.vals[key];
   const running = A.sw && A.sw.key === key;
-  const html = `<div class="eyebrow">Stopwatch</div><div class="sh-title">${esc(title)}</div>
-    <div class="bigval num" ${running ? 'data-clock="sw"' : ''} id="swv">${fmtClock(running ? (now() - A.sw.startAt) / 1000 : v.timeSec || 0)}</div>
-    <div class="btn-row mt12"><button class="btn-primary" data-act="swToggle" data-key="${key}">${running ? 'Stop' : 'Start'}</button></div>
-    <label class="field"><span>Or type the time (m:ss or seconds)</span><input class="input num" id="ttype" type="text" inputmode="decimal" value="${v.timeSec != null ? fmtClock(v.timeSec) : ''}" placeholder="e.g. 1:30"></label>
-    <button class="btn-secondary mt8" data-act="timeDone" data-key="${key}">Save typed time</button>
-    <p class="muted" style="font-size:13px;margin:10px 2px 0">You can close this while it runs; the field keeps counting. Tap it again to stop.</p>`;
-  return new Promise(res => openSheet(html, { onClose: res }));
+  const top = `<div class="bigval num sm" ${running ? 'data-clock="sw"' : ''} id="swv">${fmtClock(running ? (now() - A.sw.startAt) / 1000 : v.timeSec || 0)}</div>
+    <div class="btn-row mt8"><button class="btn-secondary" data-act="swToggle" data-key="${key}">${ic(P.timer, 18)} ${running ? 'Stop stopwatch' : 'Start stopwatch'}</button></div>
+    <div class="lbl2" style="margin:14px 0 0">Or pick the time</div>`;
+  return pickWheels({ eyebrow: 'Time', title, top, wheels: timeWheels(v.timeSec ?? 30), sep: ':', doneLabel: 'Save time',
+    bottom: `<button class="btn-primary mt12" data-act="wheelDone">Save time</button><p class="muted" style="font-size:13px;margin:10px 2px 0">You can close this while the stopwatch runs; the field keeps counting. Tap it again to stop.</p>` })
+    .then(r => (r && r.values ? { sec: secOf(r.values), typed: true } : r));
 }
 on('swToggle', (el) => {
   const key = el.dataset.key; const sh = el.closest('.sheet');
@@ -563,9 +649,9 @@ on('swToggle', (el) => {
   }
   unlockAudio();
   A.sw = { key, startAt: now() }; persist(true);
-  el.textContent = 'Stop'; sh.querySelector('#swv').setAttribute('data-clock', 'sw');
+  el.textContent = 'Stop stopwatch'; sh.querySelector('#swv').setAttribute('data-clock', 'sw');
 });
-on('timeDone', (el) => { const sh = el.closest('.sheet'); const sec = parseClock(sh.querySelector('#ttype').value); if (A.sw && A.sw.key === el.dataset.key) A.sw = null; closeSheet({ sec, typed: true }); });
+const wheelValueOf = (sh) => wheelValues(sh)[0] ?? null;
 
 export function pickExercise(title = 'Choose exercise') {
   const all = D.allExercises().sort((a, b) => a.name.localeCompare(b.name));
@@ -582,18 +668,23 @@ function cueFor(b, it) {
   cueSheet(it.exId, { target: it.target, week: A.week, cues: it.cues, defs: it.defs, eyebrow: prog ? `${it.label} · ${A.name} · ${prog.short}` : `${A.name}${A.subtitle ? ' · ' + A.subtitle : ''}` });
 }
 on('tick', (el) => { unlockAudio(); toggleTick(el.dataset.key); });
+const rowLabel = (b, r) => (b.type === 'circuit' ? `Round ${r + 1}` : `Set ${r + 1}`);
 on('pickWeight', async (el) => {
   const key = el.dataset.key; const { b, it, r } = findRow(key); const ex = D.exercise(it.exId);
-  const res = await weightSheet(ex, A.vals[key].weight); if (!res) return;
-  A.vals[key].weight = res.w;
-  if (res.all) for (let rr = r + 1; rr < b.rounds; rr++) { const w = A.vals[K(b, it, rr)]; if (w && !w.done) w.weight = res.w; }
-  if (A.vals[key].done) writeSet(b, it, r);
+  const res = await weightSheet(ex, A.vals[key].weight, { title: `${ex.name} · ${rowLabel(b, r)}` }); if (!res) return;
+  setVal(b, it, r, 'weight', res.w);
   persist(true); renderFn();
 });
 on('pickTime', async (el) => {
   const key = el.dataset.key; const { b, it, r } = findRow(key);
-  const res = await timeSheet(D.exercise(it.exId).name, key);
-  if (res && res.sec != null) { A.vals[key].timeSec = res.sec; if (A.vals[key].done) writeSet(b, it, r); }
+  const res = await timeSheet(`${D.exercise(it.exId).name} · ${rowLabel(b, r)}`, key);
+  if (res && res.sec != null) { if (A.sw && A.sw.key === key) A.sw = null; setVal(b, it, r, 'timeSec', res.sec); }
+  persist(true); renderFn();
+});
+on('pickNum', async (el) => {
+  const key = el.dataset.key, f = el.dataset.f; const { b, it, r } = findRow(key); const ex = D.exercise(it.exId);
+  const res = await numSheet(f, A.vals[key][f], { eyebrow: `${ex.name} · ${rowLabel(b, r)}`, clear: true }); if (!res) return;
+  setVal(b, it, r, f, res.clear ? null : res.values[0]);
   persist(true); renderFn();
 });
 on('cycleVariant', (el) => {
@@ -643,7 +734,22 @@ on('addExercise', async () => {
   A.blocks.push(b); prefillBlock(b); persist(true); renderFn();
   setTimeout(() => document.querySelector(`[data-blk="${b.key}"]`)?.scrollIntoView({ block: 'center' }), 50);
 });
-on('addRound', (el) => { const b = blk(el.dataset.b); b.rounds++; for (const it of b.items) prefillRow(b, it, b.rounds - 1); if (b.type === 'circuit') A.ui.rounds = {}; persist(true); renderFn(); });
+function addRoundTo(b) {
+  b.rounds++; const r = b.rounds - 1;
+  for (const it of b.items) {
+    prefillRow(b, it, r);
+    const prev = A.vals[K(b, it, r - 1)], v = A.vals[K(b, it, r)];   // keep auto-filling from what you set by hand
+    if (prev && v) for (const f of NUMF) { const sp = prev.src && prev.src[f]; if (sp === 'user' || sp === 'copy') { v[f] = prev[f]; v.src[f] = 'copy'; } }
+  }
+}
+on('addRound', (el) => { const b = blk(el.dataset.b); addRoundTo(b); if (b.type === 'circuit') A.ui.rounds = {}; persist(true); renderFn(); });
+on('roundsPick', async (el) => {
+  const b = blk(el.dataset.b); const res = await numSheet('rounds', b.rounds, { title: 'Rounds' }); if (!res || !res.values) return;
+  const n = res.values[0];
+  while (b.rounds < n) addRoundTo(b);
+  while (b.rounds > n) { const r = b.rounds - 1; if (b.items.some(it => A.vals[K(b, it, r)]?.done)) { toast('Untick the last round first'); break; } b.items.forEach(it => delete A.vals[K(b, it, r)]); b.rounds--; }
+  persist(true); renderFn();
+});
 on('removeRound', (el) => {
   const b = blk(el.dataset.b); if (b.rounds <= 0) return; const r = b.rounds - 1;
   if (b.items.some(it => A.vals[K(b, it, r)]?.done)) return toast('Untick the last round first');
@@ -705,7 +811,7 @@ on('ladFinish', async () => {
 on('ladNext', () => { const prev = A.lad.seqs[A.lad.idx]; A.lad.idx++; const nx = A.lad.seqs[A.lad.idx]; if (nx && nx.weight == null) nx.weight = prev.weight; A.rest = null; persist(true); renderFn(); });
 on('ladRest', () => { unlockAudio(); startRest(A.lad.restBetween, null); A.rest.next = A.lad.seqs[A.lad.idx + 1]?.name || ''; persist(true); renderFn(); });
 on('ladWeight', async () => {
-  const s = A.lad.seqs[A.lad.idx]; const res = await weightSheet(D.exercise(s.a), s.weight, { applyOpt: false }); if (!res) return;
+  const s = A.lad.seqs[A.lad.idx]; const res = await weightSheet(D.exercise(s.a), s.weight); if (!res) return;
   s.weight = res.w; if (s.done && s.setIds) s.setIds.forEach(id => { const st = db.get('sets', id); if (st) D.saveSet({ ...st, weight: res.w }); });
   persist(true); renderFn();
 });
@@ -718,12 +824,13 @@ on('faRun', () => {
 });
 on('faDurEdit', async () => {
   const f = A.fa; const cur = f.manualSec != null ? f.manualSec : faElapsed();
-  const v = await ask(`<div class="sh-title">Duration</div><label class="field"><span>Minutes, or m:ss</span><input class="input num" id="durin" type="text" inputmode="decimal" value="${fmtClock(cur)}"></label><button class="btn-primary" data-act="durOk">Save</button>`);
+  const v = await durationSheet(Math.round(cur));
   if (v == null) return; f.running = false; f.manualSec = v; f.accum = v; persist(true); renderFn();
 });
-on('durOk', (el) => { const s = el.closest('.sheet').querySelector('#durin').value.trim(); const sec = s.includes(':') ? parseClock(s) : Math.round((num(s) || 0) * 60); closeSheet(sec); });
-on('faRounds', (el) => { A.fa.rounds = Math.max(0, A.fa.rounds + +el.dataset.d); persist(); renderFn(); });
-on('faEffort', (el) => { A.fa.effort = +el.dataset.v; persist(); renderFn(); });
+const faUser = (k) => { A.fa.src = A.fa.src || {}; A.fa.src[k] = 'user'; };
+on('faRounds', (el) => { A.fa.rounds = Math.max(0, A.fa.rounds + +el.dataset.d); faUser('rounds'); persist(); renderFn(); });
+on('faRoundsPick', async () => { const r = await numSheet('roundsDone', A.fa.rounds); if (!r || !r.values) return; A.fa.rounds = r.values[0]; faUser('rounds'); persist(); renderFn(); });
+on('faEffortPick', async () => { const r = await numSheet('effort', A.fa.effort, { title: 'Effort (1 = very easy, 10 = maximal)' }); if (!r || !r.values) return; A.fa.effort = r.values[0]; faUser('effort'); persist(); renderFn(); });
 on('faCombo', (el) => {
   unlockAudio();
   const f = A.fa, i = +el.dataset.i, s = D.series(f.sid).sessions[f.num - 1];
@@ -733,9 +840,21 @@ on('faCombo', (el) => {
   persist(true); renderFn();
 });
 on('faPick', () => go('#/series/' + A.fa.sid + '?switch=1'));
+// rounds done / effort: last time you did this session -> average for the series -> starter (3 rounds, effort 7)
+function faDefaults(f) {
+  const ss = D.sessions().filter(s => s.series === f.sid);
+  const same = ss.find(s => s.seriesNum === f.num);
+  for (const [k, sk, start] of [['rounds', 'roundsDone', 3], ['effort', 'effort', 7]]) {
+    if (f.src && f.src[k] === 'user') continue;
+    const vals = ss.map(s => s[sk]).filter(v => v != null);
+    if (same && same[sk] != null) { f[k] = same[sk]; f.src[k] = 'last'; }
+    else if (vals.length) { f[k] = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length); f.src[k] = 'avg'; }
+    else { f[k] = start; f.src[k] = 'start'; }
+  }
+}
 export function switchSeriesNum(n) {
   if (!A || !A.fa) return; const sr = D.series(A.fa.sid);
-  A.fa.num = n; A.fa.splits = []; A.fa.forTimeSec = null; A.subtitle = sr.sessions[n - 1].title; A.title = `${sr.short} · Workout ${n}`; persist(true);
+  A.fa.num = n; A.fa.splits = []; A.fa.forTimeSec = null; A.fa.src = A.fa.src || {}; faDefaults(A.fa); A.subtitle = sr.sessions[n - 1].title; A.title = `${sr.short} · Workout ${n}`; persist(true);
 }
 on('faCancel', async () => { if (await confirmSheet('Discard this session?', 'Nothing will be saved.', 'Discard', true)) { discardActive(); go('#/today'); } });
 on('faSave', () => finishFlow());

@@ -186,6 +186,17 @@ export function setSummary(sets) {
 
 // ---------------- weights & hints
 export const equipment = () => ({ ...SEED.equipment, ...(db.kvGet('equipment', {}) || {}) });
+// starter weight when an exercise has no history (kettlebells: the lightest bell)
+export function starterWeight(eq) {
+  if (eq === 'kb') return equipment().kb.slice().sort((a, b) => a - b)[0] ?? 12;
+  return ({ db: 10, bb: 20, machine: 20, plate: 10 })[eq] ?? null;
+}
+export const maxWeight = (eq) => ({ db: 80, bb: 300, machine: 250, plate: 200 })[eq] ?? 200;
+export function snapWeight(eq, w) {
+  if (w == null) return null;
+  if (eq === 'kb') { const bells = equipment().kb; return bells.reduce((a, b) => (Math.abs(b - w) < Math.abs(a - w) ? b : a), bells[0]); }
+  const st = eq ? weightStep(eq) : 0.5; return Math.round(Math.round(w / st) * st * 100) / 100;
+}
 export function weightStep(eq) { const e = equipment(); return eq === 'db' ? e.dbStep : eq === 'bb' ? e.bbStep : eq === 'machine' ? e.machineStep : eq === 'plate' ? e.plateStep : 1; }
 export function stepWeight(eq, w, dir) {
   w = w || 0;
@@ -281,7 +292,39 @@ function migrateStairRpe() {
   }
   return n;
 }
-const MIGRATIONS = [['stair-rpe-1', migrateStairRpe]];
+// rir-rpe-1: RPE replaces RIR everywhere except programme exercises whose programme prescribes RIR (or RER) targets,
+// so those targets still match what you log. Field definitions only: logged RIR values stay in history as RIR.
+const RIR_RE = /\bR[IE]R\b/;
+export function rirTargetIds(routines) {
+  const keep = new Set();
+  for (const r of routines || []) {
+    if (!r || r.kind !== 'program') continue;
+    for (const b of r.blocks || []) for (const it of (b.items || [b])) if (it.ex && (it.weeks || []).some(w => w && RIR_RE.test(w.intensity || ''))) keep.add(it.ex);
+  }
+  return keep;
+}
+export const rirTargetExercises = () => rirTargetIds(SEED.routines);
+const toRpe = (fields) => [...new Set((fields || []).map(x => (x === 'rir' ? 'rpe' : x)))];
+function fixRirList(list, keep) {
+  let n = 0;
+  const out = (list || []).map(e => { if (!e || e.deleted || !(e.fields || []).includes('rir') || keep.has(e.id)) return e; n++; return { ...e, fields: toRpe(e.fields) }; });
+  return { out, n };
+}
+function migrateRirToRpe() {
+  const keep = rirTargetIds(SEED.routines); let n = 0;
+  for (const e of db.list('exercises')) {
+    if (e.deleted || !(e.fields || []).includes('rir') || keep.has(e.id)) continue;
+    saveExercise({ ...e, fields: toRpe(e.fields) }); n++;
+  }
+  for (const r of db.list('kv')) {
+    if (!r.k.startsWith('pack:') || !r.v || !r.v.content) continue;
+    const k2 = new Set([...keep, ...rirTargetIds(r.v.content.routines)]);
+    const { out, n: m } = fixRirList(r.v.content.exercises, k2);
+    if (m) { db.put('kv', { k: r.k, v: { ...r.v, content: { ...r.v.content, exercises: out } } }); n += m; }
+  }
+  return n;
+}
+const MIGRATIONS = [['stair-rpe-1', migrateStairRpe], ['rir-rpe-1', migrateRirToRpe]];
 export async function runMigrations() {
   const done = new Set(db.kvGet('migrations', []) || []);
   const ran = [];
@@ -341,7 +384,10 @@ export async function importPack(d) {
   const before = { routines: new Set(SEED.routines.map(x => x.id)), exercises: new Set(SEED.exercises.map(x => x.id)) };
   const prev = db.kvGet('pack:' + d.id);
   const { history, ...rest } = d;
-  if (rest.content && rest.content.exercises) rest.content = { ...rest.content, exercises: fixStairList(rest.content.exercises).out };
+  if (rest.content && rest.content.exercises) {   // an older programmes file: apply the same field changes as the migrations
+    const keep = rirTargetIds(rest.content.routines);
+    rest.content = { ...rest.content, exercises: fixRirList(fixStairList(rest.content.exercises).out, keep).out };
+  }
   db.kvSet('pack:' + d.id, { ...rest, history: history ? { note: history.note || null, skipped: history.skipped || [], count: (history.items || []).length } : null,
     importedAt: Date.now(), firstImportedAt: prev?.firstImportedAt || prev?.importedAt || Date.now() });
   applyPacks();

@@ -298,21 +298,25 @@ on('exHistMenu', async (el) => {
 });
 async function manualSet(exId) {
   const ex = D.exercise(exId);
-  const res = await setForm(ex, { date: Date.now() }, true); if (!res) return;
+  const d = W.defaultSet(exId);
+  const res = await setForm(ex, { date: Date.now(), ...d.vals }, true, d.src); if (!res) return;
   const ts = res.date || Date.now();
   const sess = { id: uid('ses'), routineId: null, routineName: 'Logged by hand', kind: 'manual', startedAt: ts, endedAt: ts, durationSec: null };
   D.saveSession(sess);
   D.saveSet({ id: uid('set'), sessionId: sess.id, exerciseId: exId, exerciseName: ex.name, date: ts, order: 0, setNo: 1, ...res.vals, routineName: sess.routineName });
   sync.soon(); go(location.hash);
 }
-function setForm(ex, st, withDate = false) {
+const sfDisp = (f, v) => (v == null || v === '' ? '–' : f === 'time' ? fmtClock(v) : fmtNum(v) + (f === 'weight' ? ' kg' : ''));
+function setForm(ex, st, withDate = false, src = {}) {
   const fields = [...new Set([...(ex ? ex.fields : []), ...['weight', 'reps', 'rir', 'rpe', 'time', 'flights', 'variant'].filter(f => st[f === 'time' ? 'timeSec' : f] != null)])];
   const lab = { weight: 'Weight (kg)', reps: 'Reps', rir: 'RIR', rpe: 'RPE', time: 'Time (m:ss)', flights: 'Flights', variant: 'Variant' };
-  const val = (f) => f === 'time' ? (st.timeSec != null ? fmtClock(st.timeSec) : '') : (st[f] ?? '');
+  const raw = (f) => (f === 'time' ? st.timeSec : st[f]);
   const d = new Date(st.date || Date.now()); const dv = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  return ask(`<div class="sh-title">${esc(ex ? ex.name : st.exerciseName)}</div>
+  return ask(`<div class="sh-title" data-ex="${esc(ex ? ex.id : st.exerciseId)}">${esc(ex ? ex.name : st.exerciseName)}</div>
     ${withDate ? `<label class="field"><span>Date</span><input class="input" type="date" id="sf_date" value="${dv}"></label>` : `<p class="sh-body" style="margin:0 0 6px">${fmtDate(st.date)}${st.block ? ' · ' + esc(st.block) : ''}</p>`}
-    <div class="chkgrid">${fields.map(f => `<label class="field"><span>${lab[f]}</span><input class="input num" id="sf_${f}" ${f === 'variant' ? '' : 'inputmode="decimal"'}${f === 'rpe' ? ' placeholder="1-10"' : ''} value="${esc(val(f))}"></label>`).join('')}</div>
+    ${Object.keys(src).length ? '<p class="tl pretl nolead" style="margin:0 0 4px"><i class="predot"></i>Pre-filled from your history · tap a value to change it</p>' : ''}
+    <div class="chkgrid">${fields.map(f => f === 'variant' ? `<label class="field"><span>${lab[f]}</span><input class="input" id="sf_variant" value="${esc(st.variant ?? '')}"></label>`
+      : `<label class="field"><span>${lab[f]}</span><button type="button" class="input num sfbtn${src[f === 'time' ? 'timeSec' : f] ? ' pre' : ''}" id="sf_${f}" data-act="sfPick" data-f="${f}" data-v="${raw(f) ?? ''}">${sfDisp(f, raw(f))}</button></label>`).join('')}</div>
     ${W.fieldHelpHTML(fields, 'insheet')}
     <label class="field"><span>Note</span><input class="input" id="sf_note" value="${esc(st.note || '')}"></label>
     <button class="btn-primary mt8" data-act="sfSave" data-fields="${fields.join(',')}">Save</button>
@@ -321,12 +325,22 @@ function setForm(ex, st, withDate = false) {
 on('sfSave', (el) => {
   const sh = el.closest('.sheet'); const vals = {};
   for (const f of el.dataset.fields.split(',').filter(Boolean)) {
-    const raw = sh.querySelector('#sf_' + f).value;
-    if (f === 'time') vals.timeSec = parseClock(raw); else if (f === 'variant') vals.variant = raw.trim() || null; else if (f === 'rpe') vals.rpe = D.clampRpe(num(raw)); else vals[f] = num(raw);
+    const el2 = sh.querySelector('#sf_' + f);
+    if (f === 'variant') { vals.variant = el2.value.trim() || null; continue; }
+    const x = el2.dataset.v === '' ? null : Number(el2.dataset.v);
+    if (f === 'time') vals.timeSec = x; else if (f === 'rpe') vals.rpe = D.clampRpe(x); else vals[f] = x;
   }
   vals.note = sh.querySelector('#sf_note').value.trim() || null;
   const dt = sh.querySelector('#sf_date');
   closeSheet({ vals, date: dt && dt.value ? new Date(dt.value + 'T12:00:00').getTime() : null });
+});
+on('sfPick', async (el) => {
+  const f = el.dataset.f; const sh = el.closest('.sheet'); const ex = D.exercise(sh.querySelector('[data-ex]').dataset.ex) || { equip: null, name: '' };
+  const cur = el.dataset.v === '' ? null : Number(el.dataset.v); let nv;
+  if (f === 'weight') { const r = await W.weightSheet(ex, cur); if (!r) return; nv = r.w; }
+  else if (f === 'time') { nv = await W.durationSheet(cur ?? 30, 'Time', 99); if (nv == null) return; }
+  else { const r = await W.numSheet(f, cur, { eyebrow: ex.name, clear: true }); if (!r) return; nv = r.clear ? null : r.values[0]; }
+  el.dataset.v = nv ?? ''; el.textContent = sfDisp(f, nv); el.classList.remove('pre');
 });
 on('editSet', async (el) => {
   const st = db.get('sets', el.dataset.id); if (!st) return;
@@ -341,7 +355,7 @@ let exEdit = null;
 const FIELD_LABELS = { weight: 'Weight', reps: 'Reps', rir: 'RIR', rpe: 'RPE', time: 'Time', flights: 'Flights', variant: 'Variant' };
 export function exerciseEdit(id) {
   if (!exEdit || exEdit._for !== id) {
-    const src = id === 'new' ? { id: uid('my-'), name: '', fields: ['weight', 'reps'], equip: null, eachSide: false, rest: 90, tempo: '', rehab: null, video: '', cues: [], srcNotes: [], variants: [], source: 'My exercise', group: 'My exercises', custom: true }
+    const src = id === 'new' ? { id: uid('my-'), name: '', fields: ['weight', 'reps', 'rpe'], equip: null, eachSide: false, rest: 90, tempo: '', rehab: null, video: '', cues: [], srcNotes: [], variants: [], source: 'My exercise', group: 'My exercises', custom: true }
       : structuredClone(D.exercise(id));
     exEdit = { ...src, _for: id, _notes: D.myNotes(src.id) };
   }
@@ -430,7 +444,7 @@ on('sessKnee', async (el) => {
 });
 on('sessDur', async (el) => {
   const s = db.get('sessions', el.dataset.id);
-  const v = await ask(`<div class="sh-title">Duration</div><label class="field"><span>Minutes, or m:ss</span><input class="input num" id="durin" value="${fmtClock(s.durationSec || 0)}"></label><button class="btn-primary" data-act="durOk">Save</button>`);
+  const v = await W.durationSheet(s.durationSec || 0);
   if (v == null) return; D.saveSession({ ...s, durationSec: v }); sync.soon(); go(location.hash);
 });
 on('delSession', async (el) => { if (!(await confirmSheet('Delete session?', 'This removes the session and all its sets.', 'Delete', true))) return; D.deleteSession(db.get('sessions', el.dataset.id)); sync.soon(); go('#/history'); });
