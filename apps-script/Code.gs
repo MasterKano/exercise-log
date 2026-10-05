@@ -10,7 +10,7 @@
  * overwrites its existing row instead of adding a duplicate.
  */
 var SET_COLS = ['id', 'session_id', 'date', 'start_time', 'routine', 'programme_week', 'block', 'exercise', 'exercise_id', 'swapped_from',
-  'set_no', 'round', 'weight_kg', 'reps', 'rir', 'rpe', 'time_s', 'flights', 'variant', 'notes', 'deleted', 'updated_at'];
+  'set_no', 'round', 'weight_kg', 'reps', 'rir', 'rpe', 'time_s', 'flights', 'avg_hr', 'variant', 'notes', 'deleted', 'updated_at'];
 var SESSION_COLS = ['id', 'date', 'start_time', 'routine', 'programme_week', 'duration_s', 'rounds_done', 'effort', 'knee_before', 'knee_after',
   'series', 'session_no', 'title', 'ladder', 'notes', 'deleted', 'updated_at'];
 

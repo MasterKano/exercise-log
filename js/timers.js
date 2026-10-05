@@ -31,6 +31,7 @@ export async function setWake(on) {
   } catch (e) { lock = null; }
 }
 export const wakeActive = () => !!lock;
+export const wakeWanted = () => wanted;
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && wanted) setWake(true); });
 
 const subs = new Set();

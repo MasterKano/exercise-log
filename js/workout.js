@@ -1,8 +1,9 @@
 // Active session runner: circuits, straight sets, supersets/giant sets, programme weeks,
-// warm-ups, for-time ladder, follow-along sessions. State lives in kv 'active' so a reload resumes.
+// warm-ups, for-time ladder, follow-along sessions, guided interval sessions (Norwegian 4x4). State lives in kv 'active' so a reload resumes.
 import * as db from './db.js';
 import * as D from './data.js';
 import { esc, uid, num, fmtNum, fmtClock, parseClock, fmtDate, fmtDur, relDay } from './util.js';
+const fmtMin = (sec) => D.fmtMin(sec);
 import { ic, P, tick, on, openSheet, closeSheet, ask, confirmSheet, actionSheet, toast, go, A_COLOR } from './ui.js';
 import { beepWarn, beepEnd, setWake, onTick, unlockAudio } from './timers.js';
 import * as sync from './sync.js';
@@ -49,7 +50,7 @@ on('kneeSkip', (el) => { const sh = el.closest('.sheet'); const n = sh.querySele
 
 // ---------------------------------------------------------------- building a session
 // ---- defaults for a new set: last logged value for that set -> average of the exercise's history -> starter value
-const NUMF = ['weight', 'reps', 'rir', 'rpe', 'timeSec', 'flights'];
+const NUMF = ['weight', 'reps', 'rir', 'rpe', 'timeSec', 'flights', 'hr'];
 const FIELD_OF = { timeSec: 'time' };
 function histAvg(exId) {
   const acc = {};
@@ -62,6 +63,8 @@ function targetReps(t) { const m = String((t && t.reps) || '').trim().match(/^(\
 function targetSecs(t) { const m = String((t && t.reps) || '').match(/^(\d+)\s*sec/i); return m ? +m[1] : null; }
 export function starterVal(ex, f, target, fields) {
   if (!fields.includes(FIELD_OF[f] || f)) return null;
+  if (ex.starter && ex.starter[f] != null) return ex.starter[f];   // per-exercise starters (e.g. Norwegian 4x4: RPE 8, 15 flights)
+  if (f === 'hr') return null;                                      // heart rate is optional: blank unless you logged it before
   if (f === 'reps') return target && target.reps ? targetReps(target) : 10;
   if (f === 'weight') return D.starterWeight(ex.equip);
   if (f === 'rir') return 2;
@@ -79,6 +82,10 @@ function roundFor(ex, f, x) {
 function defaultVal(last, ex, f, r, target, fields) {
   const s = last && last.sets ? last.sets[r] : null;
   if (s && s[f] != null) return [s[f], 'last'];
+  if (f === 'hr') {                     // optional avg HR: blank unless last time had one (then the nearest earlier interval's value)
+    const ls = last && last.sets ? last.sets.slice(0, r + 1).reverse().concat(last.sets.slice(r + 1)) : [];
+    const h = ls.map(x => x.hr).find(x => x != null); return h != null ? [h, 'last'] : [null, null];
+  }
   const a = last && last.avg ? last.avg[f] : null;
   if (a != null) return [roundFor(ex, f, a), 'avg'];
   const st = starterVal(ex, f, target, fields);
@@ -88,7 +95,7 @@ function snapshotLast(exId, routineId, week) {
   const l = week ? D.lastWeekSets(exId, routineId, week) : D.lastSets(exId);
   if (!l) return null;
   return { date: l.session.startedAt, week: l.session.week || null, routineId: l.session.routineId, avg: histAvg(exId),
-    sets: l.sets.map(s => ({ weight: s.weight, reps: s.reps, rir: s.rir, rpe: s.rpe, timeSec: s.timeSec, flights: s.flights, variant: s.variant })) };
+    sets: l.sets.map(s => ({ weight: s.weight, reps: s.reps, rir: s.rir, rpe: s.rpe, timeSec: s.timeSec, flights: s.flights, hr: s.hr ?? null, variant: s.variant })) };
 }
 // defaults for "Log a set by hand" (set 1, no programme target)
 export function defaultSet(exId) {
@@ -142,7 +149,7 @@ function prefillRow(b, it, r, force = false) {
   const k = K(b, it, r); if (A.vals[k] && (A.vals[k].done || !force)) return;
   const ex = D.exercise(it.exId) || { fields: ['reps'], variants: [] }; const fields = fieldsOf(it);
   const ls = it.last ? it.last.sets : [];
-  const v = { weight: null, reps: null, rir: null, rpe: null, timeSec: null, flights: null, done: false, src: {} };
+  const v = { weight: null, reps: null, rir: null, rpe: null, timeSec: null, flights: null, hr: null, done: false, src: {} };
   for (const f of NUMF) { const [x, s2] = defaultVal(it.last, ex, f, r, it.target, fields); v[f] = x; if (s2) v.src[f] = s2; }
   v.variant = ls[r]?.variant ?? ls[ls.length - 1]?.variant ?? (ex.variants && ex.variants[0]) ?? null;
   A.vals[k] = v;
@@ -186,6 +193,14 @@ export async function startRoutine(rid, opts = {}) {
     A.title = `${sr.short} · Workout ${n}`; A.subtitle = s.title;
     A.fa = { sid: sr.id, num: n, startAt: null, accum: 0, running: false, manualSec: null, rounds: 0, effort: null, notes: '', splits: [], forTimeSec: null, src: {} };
     faDefaults(A.fa);
+  } else if (r.kind === 'intervals') {
+    const mods = r.modalities || ['Stairs', 'Run', 'Bike', 'Rower', 'Other'];
+    const last = snapshotLast(r.ex);
+    const lastMod = last && last.sets.map(s => s.variant).find(v => v && mods.includes(v));
+    A.iv = { cfg: { ...r.intervals }, modes: mods, modality: lastMod || mods[0], src: { modality: lastMod ? 'last' : 'start' }, zones: r.zones || {},
+      idx: -1, phStart: null, phEnd: null, startAt: null, endAt: null, finished: false, b10: false };
+    A.blocks = [{ key: 'b0', type: 'single', label: '', rounds: A.iv.cfg.count, items: [mkItem('i0', r.ex, '', null, { fields: ivFields(A.iv.modality) })] }];
+    A.blocks.forEach(prefillBlock);
   } else {
     A.blocks = buildBlocks(r, week, opts.rounds);
     A.blocks.forEach(prefillBlock);
@@ -205,12 +220,12 @@ function discardActive() {
 function writeSet(b, it, r) {
   const k = K(b, it, r), v = A.vals[k], ex = D.exercise(it.exId), f = fieldsOf(it);
   if (!v.setId) v.setId = uid('set');
-  const has = (x) => f.includes(x);
+  const has = (x) => f.includes(x); const iv = A.kind === 'intervals' ? A.iv : null;
   D.saveSet({ id: v.setId, sessionId: A.id, exerciseId: it.exId, exerciseName: ex.name, date: v.tickedAt || now(),
     order: A.blocks.indexOf(b) * 1000 + r * 20 + b.items.indexOf(it), setNo: r + 1, round: b.type === 'circuit' ? r + 1 : null,
-    block: b.type === 'circuit' ? `Round ${r + 1}` : (it.label || b.label || ''), weight: has('weight') ? v.weight : null, reps: has('reps') ? v.reps : null,
-    rir: has('rir') ? v.rir : null, rpe: has('rpe') ? v.rpe : null, timeSec: has('time') ? v.timeSec : null, flights: has('flights') ? v.flights : null,
-    variant: has('variant') ? v.variant : null, swappedFrom: it.origExId || null, routineName: A.title, week: A.week || null, note: null });
+    block: b.type === 'circuit' ? `Round ${r + 1}` : iv ? `Interval ${r + 1}` : (it.label || b.label || ''), weight: has('weight') ? v.weight : null, reps: has('reps') ? v.reps : null,
+    rir: has('rir') ? v.rir : null, rpe: has('rpe') ? v.rpe : null, timeSec: has('time') ? v.timeSec : iv ? iv.cfg.workSec : null, flights: has('flights') ? v.flights : null,
+    hr: has('hr') ? v.hr : null, variant: iv ? iv.modality : has('variant') ? v.variant : null, swappedFrom: it.origExId || null, routineName: A.title, week: A.week || null, note: null });
 }
 function orderedRows() {
   const rows = [];
@@ -253,7 +268,8 @@ function toggleTick(key) {
     v.done = true; v.tickedAt = now(); writeSet(b, it, r);
     const rows = orderedRows(); const idx = rows.findIndex(x => x.b === b && x.it === it && x.r === r);
     const next = rows.slice(idx + 1).find(x => !A.vals[K(x.b, x.it, x.r)]?.done) || rows.find(x => !A.vals[K(x.b, x.it, x.r)]?.done);
-    if (next) startRest(restAfter(b, it), next); else { A.rest = null; toast('All sets done. Tap Finish when ready.'); }
+    if (A.kind === 'intervals') { A.rest = null; if (!next) toast('All intervals logged. Tap Finish & save when ready.'); }
+    else if (next) startRest(restAfter(b, it), next); else { A.rest = null; toast('All sets done. Tap Finish when ready.'); }
   }
   persist(true); renderFn();
 }
@@ -279,6 +295,7 @@ function fieldsHTML(key, it, v, r) {
     if (x === 'weight') return `<button class="f w${pc('weight')}" data-act="pickWeight" data-key="${key}" aria-label="weight">${val('weight')}<span class="u">kg</span>${arrow(bt.weight, 'weight')}</button>`;
     if (x === 'reps') return `<button class="f r${pc('reps')}" data-act="pickNum" data-key="${key}" data-f="reps" aria-label="reps">${val('reps', ph || '–')}<span class="u">reps</span>${arrow(bt.reps, 'reps')}</button>`;
     if (x === 'rir' || x === 'rpe') return `<button class="f i${pc(x)}" data-act="pickNum" data-key="${key}" data-f="${x}" aria-label="${x === 'rpe' ? 'RPE 1 to 10' : 'RIR'}"><span class="u">${x.toUpperCase()}</span>${val(x)}</button>`;
+    if (x === 'hr') return `<button class="f i hr${pc('hr')}" data-act="pickNum" data-key="${key}" data-f="hr" aria-label="average heart rate, optional"><span class="u">HR</span>${val('hr')}</button>`;
     if (x === 'flights') return `<button class="f r fl${pc('flights')}" data-act="pickNum" data-key="${key}" data-f="flights" aria-label="flights">${val('flights')}<span class="u">flights</span></button>`;
     if (x === 'time') return `<button class="f t${swRun ? ' running' : ''}${pc('timeSec')}" data-act="pickTime" data-key="${key}" aria-label="time"><b ${swRun ? 'data-clock="sw"' : ''}>${swRun ? fmtClock((now() - A.sw.startAt) / 1000) : v.timeSec != null ? fmtClock(v.timeSec) : '<span class="ph">0:00</span>'}</b><span class="u">${ic(P.timer, 15, '#8e8e93', 2)}</span>${arrow(bt.time, 'time')}</button>`;
     if (x === 'variant') return `<button class="f var" data-act="cycleVariant" data-key="${key}" aria-label="variant"><b>${esc(v.variant || (ex.variants || [])[0] || 'variant')}</b></button>`;
@@ -345,6 +362,7 @@ export function view() {
   if (!A) return { html: `<div class="empty">No workout in progress.<br><br><a class="btn-primary" href="#/today">Go to Today</a></div>`, noTab: true };
   if (A.kind === 'ladder') return viewLadder();
   if (A.kind === 'followalong') return viewFollow();
+  if (A.kind === 'intervals') return viewIntervals();
   return viewSets();
 }
 function curRound(b) { const n = b.items.length; let cur = 0; while (cur < b.rounds && b.items.filter(it => A.vals[K(b, it, cur)]?.done).length === n) cur++; return cur; }
@@ -374,9 +392,9 @@ function circuitHTML(b) {
   }
   return out;
 }
-function rowHTML(b, it, r, label) {
+function rowHTML(b, it, r, label, cls = '') {
   const key = K(b, it, r); const v = A.vals[key]; if (!v) return '';
-  return `<div class="srow" data-row="${key}"><div class="sn num">${esc(label)}</div>${fieldsHTML(key, it, v, r)}<button class="tickbtn" data-act="tick" data-key="${key}" aria-label="Tick set">${tick(v.done)}</button></div>`;
+  return `<div class="srow${cls}" data-row="${key}"><div class="sn num">${esc(label)}</div>${fieldsHTML(key, it, v, r)}<button class="tickbtn" data-act="tick" data-key="${key}" aria-label="Tick set">${tick(v.done)}</button></div>`;
 }
 function lastWeekLine(it) {
   if (!it.last) return '';
@@ -549,6 +567,106 @@ function viewFollow() {
   return { html, noTab: true };
 }
 
+// ---------------------------------------------------------------- intervals (Norwegian 4x4)
+// Timestamp based like the rest timer: each phase stores its absolute end time, so the countdown survives
+// reloads, backgrounding and iOS suspending the page (on return it catches up, beeping only if a phase just ended).
+function ivFields(mod) { return mod === 'Stairs' ? ['flights', 'rpe', 'hr'] : ['rpe', 'hr']; }
+const ivRunning = () => !!(A && A.iv && A.iv.idx >= 0 && !A.iv.finished);
+function ivPhaseLabel(p, cfg) { return p.t === 'warm' ? 'Warm-up' : p.t === 'cool' ? 'Cool-down' : p.t === 'rec' ? 'Recovery' : `Interval ${p.n} of ${cfg.count}`; }
+function ivZone(p) { const z = A.iv.zones || {}; return p.t === 'work' ? z.hard || '' : p.t === 'rec' ? z.rec || z.easy || '' : z.easy || ''; }
+function ivRemain() { const iv = A.iv; if (!ivRunning()) return 0; return Math.max(0, (iv.phEnd - (A.pausedAt || now())) / 1000); }
+export function ivRunSec() { const iv = A.iv; if (!iv || !iv.startAt) return 0; return Math.max(0, ((iv.endAt || A.pausedAt || now()) - iv.startAt) / 1000); }
+function ivStartPhase(i, at) {
+  const iv = A.iv, ph = D.ivPhases(iv.cfg);
+  if (i >= ph.length) { iv.finished = true; iv.idx = ph.length; iv.endAt = at; iv.phStart = iv.phEnd = null; return; }
+  iv.idx = i; iv.phStart = at; iv.phEnd = at + ph[i].sec * 1000; iv.b10 = false;
+}
+// called by the global tick: 10 s warning beep, then end beeps + next phase at 0
+function ivTick(t) {
+  const iv = A.iv; if (!ivRunning() || A.pausedAt) return;
+  const ph = D.ivPhases(iv.cfg); const remain = (iv.phEnd - t) / 1000;
+  if (!iv.b10 && remain <= 10 && ph[iv.idx].sec > 12) { iv.b10 = true; if (remain > 8.5) beepWarn(); persist(); }
+  if (t < iv.phEnd) return;
+  let lastEnd = iv.phEnd;
+  while (!iv.finished && t >= iv.phEnd) { lastEnd = iv.phEnd; ivStartPhase(iv.idx + 1, iv.phEnd); }
+  if (t - lastEnd < 2000) beepEnd();                                     // don't beep for phases that ended while away
+  if (!iv.finished && (iv.phEnd - t) / 1000 <= 10) iv.b10 = true;
+  if (iv.finished) toast('Cool-down done. Log your intervals and save.');
+  persist(true); if (location.hash === '#/workout') renderFn();
+}
+function ivDoneCount() { const b = A.blocks[0]; if (!b) return 0; const it = b.items[0]; let n = 0; for (let r = 0; r < b.rounds; r++) if (A.vals[K(b, it, r)]?.done) n++; return n; }
+function ivLastLine(it) {
+  const l = it.last; if (!l || !l.sets.length) return `<div class="tl">No history yet: pre-filled with starter values.</div>`;
+  const s = l.sets, mod = s.map(x => x.variant).find(Boolean);
+  const list = (f) => s.map(x => x[f]).filter(x => x != null).map(x => fmtNum(x));
+  const bits = [mod, list('flights').length ? `${list('flights').join(', ')} flights` : '', list('rpe').length ? `RPE ${list('rpe').join(', ')}` : '', list('hr').length ? `HR ${list('hr').join(', ')}` : ''].filter(Boolean);
+  return `<div class="tl num">Last time (${esc(relDay(l.date))}): <b>${esc(bits.join(' · ') || '–')}</b></div>`;
+}
+function viewIntervals() {
+  const iv = A.iv, cfg = iv.cfg, ph = D.ivPhases(cfg), b = A.blocks[0], it = b ? b.items[0] : null, z = iv.zones || {};
+  const nav = `<div class="nav"><button class="txtbtn dim" data-act="endWorkout">End</button><div class="center">${esc(A.name)}${A.subtitle ? `<small>${esc(A.subtitle)}</small>` : ''}</div><div class="right">${ivRunning() ? pauseBtn() : ''}</div></div>`;
+  let top = '';
+  if (iv.idx < 0) {
+    const row = (k, label, val, sub) => `<button class="kv2 ivset" data-act="ivSet" data-k="${k}"><span>${esc(label)}${sub ? `<small>${esc(sub)}</small>` : ''}</span><b class="num">${esc(val)}</b></button>`;
+    top = `<div class="card ivhero"><div class="eyebrow">Ready · set it up, then start</div><div class="ivbig num">${fmtClock(D.ivTotal(cfg))}</div><div class="ivsub">total · ${cfg.count} × ${esc(fmtMin(cfg.workSec))} hard</div></div>
+      <div class="section-label">Timer · tap to change</div>
+      <div class="card list nobadge ivcfg">${row('warmupSec', 'Warm-up', fmtClock(cfg.warmupSec), z.easy)}${row('count', 'Intervals', cfg.count + ' ×')}${row('workSec', 'Interval', fmtClock(cfg.workSec), z.hard)}${row('recoverySec', 'Recovery between', fmtClock(cfg.recoverySec), z.rec || z.easy)}${row('cooldownSec', 'Cool-down', fmtClock(cfg.cooldownSec), z.easy)}</div>
+      <div class="pad mt12"><button class="btn-primary" data-act="ivStart">${ic(P.play, 18, 'none', 0, '#000')}Start timer</button>
+      <p class="muted" style="font-size:13px;margin:8px 2px 0">Beeps at 10 s left and at the end of each phase. The screen stays awake while it runs.</p></div>`;
+  } else if (!iv.finished) {
+    const p = ph[iv.idx], nx = ph[iv.idx + 1], remain = ivRemain();
+    top = `<div class="ivrun ${p.t === 'work' ? 'hard' : 'easy'}${A.pausedAt ? ' paused' : ''}" data-phase="${p.t}${p.n ? p.n : ''}">
+      <div class="ivph">${esc(ivPhaseLabel(p, cfg))}${A.pausedAt ? ' · paused' : ''}</div><div class="ivzone">${esc(ivZone(p))}</div>
+      <div class="ivbig num" data-clock="iv">${fmtClock(Math.ceil(remain))}</div>
+      <div class="track"><i data-clock="ivbar" style="width:${Math.min(100, Math.max(0, 100 * (1 - remain / p.sec)))}%"></i></div>
+      <div class="ivsegs">${ph.map((q, i) => `<i class="${q.t}${i < iv.idx ? ' done' : i === iv.idx ? ' cur' : ''}" style="flex:${q.sec}"></i>`).join('')}</div>
+      <div class="ivnx">${nx ? `Next: <b>${esc(ivPhaseLabel(nx, cfg))}</b> · ${fmtClock(nx.sec)}` : 'Last phase'}</div>
+      <div class="btn-row ivbtns"><button class="btn-secondary" data-act="pauseToggle">${A.pausedAt ? ic(P.play, 16, 'none', 0, '#fff') + ' Resume' : ic(P.pause, 16, 'none', 0, '#fff') + ' Pause'}</button><button class="btn-secondary" data-act="ivSkip">Skip phase</button></div>
+      <div class="ivtot num">Timer <span data-clock="ivtot">${fmtClock(ivRunSec())}</span> of ${fmtClock(D.ivTotal(cfg))}</div></div>`;
+  } else {
+    top = `<div class="ivrun done"><div class="ivph">Done</div><div class="ivbig num">${fmtClock(ivRunSec())}</div><div class="ivzone">Nice work. Log your intervals below, then save.</div></div>`;
+  }
+  let log = '';
+  if (it) {
+    const dn = ivDoneCount(), curN = ivRunning() && ph[iv.idx].t !== 'warm' ? (ph[iv.idx].t === 'cool' ? cfg.count : ph[iv.idx].n) : 0;
+    log = `<div class="blk ivlog" data-blk="${b.key}"><div class="exh"><span class="lt">♥</span><button class="nm" data-act="cue" data-b="${b.key}" data-i="${it.key}">Log intervals</button>${media(b, it)}<span class="sp"></span><span class="cnt num">${dn}/${b.rounds}</span></div>
+      <div class="ivmod"><span>Modality</span><button class="f mod${iv.src.modality !== 'user' ? ' pre' : ''}" data-act="ivMode" aria-label="Modality"><b>${esc(iv.modality)}</b></button></div>
+      ${ivLastLine(it)}${fieldHelpHTML(fieldsOf(it), 'ind')}${preCaption(b, [it], true)}
+      <div class="sets">${Array.from({ length: b.rounds }, (_, r) => rowHTML(b, it, r, String(r + 1), r + 1 === curN ? ' ivcur' : '')).join('')}</div>
+      <div class="tl">One row per interval. HR = average heart rate in bpm (optional).${iv.modality === 'Stairs' ? ' Flights per interval.' : ''}</div></div>`;
+  }
+  const fin = `<div class="finish"><button class="btn-secondary" data-act="endWorkout">${ic(P.check, 18, '#fff', 2.6)} Finish & save</button></div>`;
+  return { html: nav + top + log + fin, noTab: true };
+}
+function ivSetRounds(n) {
+  const b = A.blocks[0]; if (!b) return;
+  while (b.rounds < n) addRoundTo(b);
+  while (b.rounds > n) { const r = b.rounds - 1; if (b.items.some(it => A.vals[K(b, it, r)]?.done)) { toast('Untick the last interval first'); break; } b.items.forEach(it => delete A.vals[K(b, it, r)]); b.rounds--; }
+  A.iv.cfg.count = b.rounds;
+}
+const IV_SET = { warmupSec: ['Warm-up', 30], workSec: ['Interval length', 15], recoverySec: ['Recovery between intervals', 10], cooldownSec: ['Cool-down', 30] };
+on('ivSet', async (el) => {
+  const k = el.dataset.k, iv = A.iv; if (!iv || iv.idx >= 0) return;
+  if (k === 'count') { const r = await numSheet('intervals', iv.cfg.count, { title: 'Hard intervals' }); if (!r || !r.values) return; ivSetRounds(r.values[0]); }
+  else { const [title, max] = IV_SET[k]; const v = await durationSheet(iv.cfg[k], title, max); if (v == null) return; iv.cfg[k] = v; }
+  persist(true); renderFn();
+});
+on('ivStart', () => { unlockAudio(); const t = now(); A.iv.startAt = t; A.iv.endAt = null; A.iv.finished = false; ivStartPhase(0, t); persist(true); renderFn(); });
+on('ivSkip', () => { if (!ivRunning()) return; ivStartPhase(A.iv.idx + 1, A.pausedAt || now()); if (A.iv.finished && A.pausedAt) { A.pausedTotal += now() - A.pausedAt; A.pausedAt = null; } persist(true); renderFn(); });
+on('ivMode', async () => {
+  const iv = A.iv, mods = iv.modes; const i0 = Math.max(0, mods.indexOf(iv.modality));
+  const r = await pickWheels({ eyebrow: A.name, title: 'Modality', wheels: [{ id: 'mod', values: range(0, mods.length - 1), value: i0, fmt: (i) => mods[i], label: 'Modality' }] });
+  if (!r || !r.values) return;
+  iv.modality = mods[r.values[0]]; iv.src.modality = 'user';
+  const b = A.blocks[0], it = b.items[0]; it.fields = ivFields(iv.modality); const ex = D.exercise(it.exId) || { fields: [] };
+  for (let rr = 0; rr < b.rounds; rr++) {           // flights appear for Stairs: pre-fill them like any other field
+    const v = A.vals[K(b, it, rr)]; if (!v) continue;
+    if (it.fields.includes('flights') && v.flights == null && !(v.src && v.src.flights === 'user')) { const [x, s2] = defaultVal(it.last, ex, 'flights', rr, null, it.fields); v.flights = x; v.src = v.src || {}; if (s2) v.src.flights = s2; }
+    if (v.done) writeSet(b, it, rr);
+  }
+  persist(true); renderFn();
+});
+
 // ---------------------------------------------------------------- finishing
 async function finishFlow() {
   const k = await kneeSheet('after', { notes: !A.fa });
@@ -566,6 +684,12 @@ async function finishFlow() {
     Object.assign(sess, { durationSec: d || sess.durationSec, series: f.sid, seriesName: sr.fullName, seriesNum: f.num, title: s.title, roundsDone: f.rounds, effort: f.effort,
       forTimeSec: f.forTimeSec, notes: f.notes || '' });
   }
+  if (A.iv) {
+    const iv = A.iv;
+    Object.assign(sess, { intervals: { ...iv.cfg, modality: iv.modality, timerSec: iv.startAt ? Math.round(ivRunSec()) : null, timerDone: !!iv.finished },
+      rounds: iv.cfg.count, roundsDone: ivDoneCount(), title: `${iv.modality} · ${iv.cfg.count} × ${fmtMin(iv.cfg.workSec)}` });
+    if (iv.startAt) sess.durationSec = Math.round(ivRunSec());
+  }
   if (A.warm) { const w = D.warmup(A.warm.id); sess.warmup = `${w.name}: ${w.items.filter((_, i) => A.warm.done[i]).length}/${w.items.length}`; }
   D.saveSession(sess);
   const adv = A.programme ? D.maybeAdvanceWeek(A.programme) : false;
@@ -579,21 +703,25 @@ async function finishFlow() {
 export function cueSheet(exId, ctx = {}) {
   const ex = D.exercise(exId); if (!ex) return;
   const t = ctx.target || null; const wk = ctx.week ? `S${ctx.week}` : '';
-  const tags = [t?.tempo ? `tempo ${t.tempo}` : ex.tempo ? `tempo ${ex.tempo}` : '', t?.rest && /\d/.test(t.rest) ? `rest ${t.rest}` : ex.rest ? `rest ${ex.rest} s` : '',
+  const tags = [...(ex.tags || []), t?.tempo ? `tempo ${t.tempo}` : ex.tempo ? `tempo ${ex.tempo}` : '', t?.rest && /\d/.test(t.rest) ? `rest ${t.rest}` : ex.rest ? `rest ${ex.rest} s` : '',
     t?.intensity && t.intensity.length < 14 ? t.intensity : '', ex.eachSide ? 'each side' : '', ex.rehab === 'rehab' ? 'rehab (inferred)' : ex.rehab === 'load' ? 'knee loading (inferred)' : '',
     ex.rangeKg || ''].filter(Boolean);
   const m = t && t.sx ? t.sx.match(/^(\d+)×\s*(.*)$/) : null;
   const weekBox = t && t.sx ? `<div class="wk2 num"><div><div class="eyebrow" style="font-size:12px">This week${wk ? ' · ' + wk : ''}</div><div class="big">${m ? `${m[1]} × ${esc(m[2])}` : esc(t.sx)}<span>sets × reps</span></div></div>
     <div class="kv">${t.tempo ? `Tempo <b>${esc(t.tempo)}</b><br>` : ''}${t.intensity ? `Effort <b>${esc(t.intensity)}</b><br>` : ''}${t.rest ? `Rest <b>${esc(t.rest)}</b>` : ''}</div></div>`
     : t && t.reps ? `<div class="wk2 num"><div><div class="eyebrow" style="font-size:12px">Target</div><div class="big">${esc(t.reps)}<span>reps${ex.eachSide ? ' each side' : ''}</span></div></div><div class="kv">${ex.rangeKg ? `Range <b>${esc(ex.rangeKg)}</b>` : ''}</div></div>` : '';
+  const ivr = D.allRoutines().find(r => r.kind === 'intervals' && r.ex === ex.id);
+  const ivc = ivr ? (A && A.iv && A.routineId === ivr.id ? A.iv.cfg : ivr.intervals) : null;
+  const ivBox = ivc ? `<div class="wk2 iv num"><div><div class="eyebrow" style="font-size:12px">The protocol</div><div class="big">${ivc.count} × ${esc(fmtMin(ivc.workSec))}<span>hard intervals</span></div></div>
+    <div class="kv">Warm-up <b>${esc(fmtMin(ivc.warmupSec))}</b><br>Recovery <b>${esc(fmtMin(ivc.recoverySec))}</b><br>Cool-down <b>${esc(fmtMin(ivc.cooldownSec))}</b><br>Total <b>~${Math.round(D.ivTotal(ivc) / 60)} min</b></div></div>` : '';
   const seen = new Set();
   const bl = [...(ex.cues || []), ...(ctx.cues || []), ...(ctx.defs || [])].filter(c => !seen.has(c) && seen.add(c)).map(c => ({ c, s: /^"/.test(c) ? 'Coach note' : '' }));
   const notes = ex.srcNotes || [];
   const html = `<div class="sht"><div><div class="eyebrow" style="font-size:12px">${esc(ctx.eyebrow || ex.source || '')}</div><h2>${esc(ex.name)}</h2></div>
     <button class="circbtn" data-act="closeSheet" aria-label="Close">${ic(P.x, 15, '#d1d1d6', 2.6)}</button></div>
     ${tags.length ? `<div class="tags num">${tags.map(x => `<span class="tag">${esc(x)}</span>`).join('')}</div>` : '<div style="height:12px"></div>'}
-    ${weekBox}
-    ${bl.length ? `<div class="lbl2">${D.isProgrammeExercise(ex.id) ? 'From your programme' : 'From the source'}</div><ul class="bul">${bl.map(b => `<li>${esc(b.c)}${b.s ? `<small>${b.s}</small>` : ''}</li>`).join('')}</ul>` : ''}
+    ${weekBox}${ivBox}
+    ${bl.length ? `<div class="lbl2">${ex.cueLabel ? esc(ex.cueLabel) : D.isProgrammeExercise(ex.id) ? 'From your programme' : 'From the source'}</div><ul class="bul">${bl.map(b => `<li>${esc(b.c)}${b.s ? `<small>${b.s}</small>` : ''}</li>`).join('')}</ul>` : ''}
     ${notes.length ? `<div class="lbl2" style="margin-top:12px">Programme notes</div><ul class="bul sm">${notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
     <div class="lbl2" style="margin-top:12px">My notes</div>
     <textarea class="notes" rows="2" placeholder="Add your own cue..." data-mynotes="${esc(ex.id)}">${esc(D.myNotes(ex.id))}</textarea>
@@ -626,11 +754,12 @@ export const NUM_SPEC = {
   rpe: { label: 'RPE', values: range(1, 10), dflt: 7, unit: 'RPE' }, flights: { label: 'Flights', values: range(0, 200), dflt: 15, unit: 'flights' },
   rounds: { label: 'Rounds', values: range(1, 20), dflt: 3, unit: 'rounds' }, roundsDone: { label: 'Rounds done', values: range(0, 30), dflt: 3, unit: 'rounds' },
   effort: { label: 'Effort', values: range(1, 10), dflt: 7, unit: '/ 10' },
+  hr: { label: 'Avg heart rate', values: range(60, 220), dflt: 150, unit: 'bpm' }, intervals: { label: 'Intervals', values: range(1, 10), dflt: 4, unit: '×' },
 };
 export function numSheet(f, cur, { eyebrow = '', title, clear = false } = {}) {
   const sp = NUM_SPEC[f];
   return pickWheels({ eyebrow, title: title || sp.label, clear, wheels: [{ id: f, values: sp.values, value: cur ?? sp.dflt, unit: sp.unit, label: sp.label }],
-    help: f === 'rir' || f === 'rpe' ? `<b>${f.toUpperCase()}</b> ${esc(D.FIELD_HELP[f])}` : null });
+    help: f === 'rir' || f === 'rpe' ? `<b>${f.toUpperCase()}</b> ${esc(D.FIELD_HELP[f])}` : f === 'hr' ? '<b>HR</b> Average heart rate for this interval in beats per minute (optional).' : null });
 }
 export function timeSheet(title, key) {
   const v = A.vals[key];
@@ -668,7 +797,7 @@ function cueFor(b, it) {
   cueSheet(it.exId, { target: it.target, week: A.week, cues: it.cues, defs: it.defs, eyebrow: prog ? `${it.label} · ${A.name} · ${prog.short}` : `${A.name}${A.subtitle ? ' · ' + A.subtitle : ''}` });
 }
 on('tick', (el) => { unlockAudio(); toggleTick(el.dataset.key); });
-const rowLabel = (b, r) => (b.type === 'circuit' ? `Round ${r + 1}` : `Set ${r + 1}`);
+const rowLabel = (b, r) => (b.type === 'circuit' ? `Round ${r + 1}` : A.kind === 'intervals' ? `Interval ${r + 1}` : `Set ${r + 1}`);
 on('pickWeight', async (el) => {
   const key = el.dataset.key; const { b, it, r } = findRow(key); const ex = D.exercise(it.exId);
   const res = await weightSheet(ex, A.vals[key].weight, { title: `${ex.name} · ${rowLabel(b, r)}` }); if (!res) return;
@@ -683,7 +812,8 @@ on('pickTime', async (el) => {
 });
 on('pickNum', async (el) => {
   const key = el.dataset.key, f = el.dataset.f; const { b, it, r } = findRow(key); const ex = D.exercise(it.exId);
-  const res = await numSheet(f, A.vals[key][f], { eyebrow: `${ex.name} · ${rowLabel(b, r)}`, clear: true }); if (!res) return;
+  const prevHr = f === 'hr' && A.vals[key][f] == null ? [...Array(r).keys()].reverse().map(rr => A.vals[K(b, it, rr)]?.hr).find(x => x != null) : null;
+  const res = await numSheet(f, A.vals[key][f] ?? prevHr, { eyebrow: `${ex.name} · ${rowLabel(b, r)}`, clear: true }); if (!res) return;
   setVal(b, it, r, f, res.clear ? null : res.values[0]);
   persist(true); renderFn();
 });
@@ -763,12 +893,12 @@ on('toggleRound', (el) => {
 on('restAdd', () => { if (!A.rest) return; const base = Math.max(A.rest.endAt, now()); A.rest.endAt = base + 30000; A.rest.dur = (A.rest.endAt - A.rest.startAt) / 1000; A.rest.b10 = false; A.rest.b0 = false; persist(true); renderFn(); });
 on('restSkip', () => { A.rest = null; persist(true); renderFn(); });
 on('pauseToggle', () => {
-  if (A.pausedAt) { const d = now() - A.pausedAt; A.pausedTotal += d; A.pausedAt = null; if (A.lad) A.lad.seqs.forEach(s => { if (s.running) s.startAt += d; }); if (A.fa && A.fa.running) A.fa.startAt += d; }
+  if (A.pausedAt) { const d = now() - A.pausedAt; A.pausedTotal += d; A.pausedAt = null; if (A.lad) A.lad.seqs.forEach(s => { if (s.running) s.startAt += d; }); if (A.fa && A.fa.running) A.fa.startAt += d; if (ivRunning()) { A.iv.phStart += d; A.iv.phEnd += d; A.iv.startAt += d; } }
   else A.pausedAt = now();
   persist(true); renderFn();
 });
 on('endWorkout', async () => {
-  const anyDone = Object.values(A.vals).some(v => v.done) || (A.lad && A.lad.seqs.some(s => s.startAt));
+  const anyDone = Object.values(A.vals).some(v => v.done) || (A.lad && A.lad.seqs.some(s => s.startAt)) || !!(A.iv && A.iv.startAt);
   const v = await actionSheet(anyDone ? 'End workout' : 'Nothing logged yet', [
     ...(anyDone ? [{ label: 'Finish & save', v: 'finish', icon: P.check }] : []), { label: 'Discard workout', v: 'discard', danger: true, icon: P.trash }]);
   if (v === 'finish') finishFlow();
@@ -869,6 +999,9 @@ onTick(() => {
     else if (c === 'sw' && A.sw) el.textContent = fmtClock((t - A.sw.startAt) / 1000);
     else if (c === 'ladder' && A.lad) { const s = A.lad.seqs[A.lad.idx]; el.textContent = fmtClock(s.done ? s.timeSec : seqElapsed(s)); }
     else if (c === 'fa' && A.fa && A.fa.manualSec == null) el.textContent = fmtClock(faElapsed());
+    else if (c === 'iv' && A.iv) el.textContent = fmtClock(Math.ceil(ivRemain()));
+    else if (c === 'ivbar' && ivRunning()) { const p = D.ivPhases(A.iv.cfg)[A.iv.idx]; el.style.width = Math.min(100, Math.max(0, 100 * (1 - ivRemain() / p.sec))) + '%'; }
+    else if (c === 'ivtot' && A.iv) el.textContent = fmtClock(ivRunSec());
   });
   if (A.rest) {
     const remain = (A.rest.endAt - t) / 1000;
@@ -881,8 +1014,9 @@ onTick(() => {
     }
     if (remain <= -4) { A.rest = null; persist(); document.getElementById('restbar')?.remove(); document.getElementById('view')?.classList.remove('withRest'); }
   }
+  if (A.iv) ivTick(t);
   const lad = A.lad && A.lad.seqs.some(s => s.running && !s.done);
-  setWake(!!(A.rest || A.sw || lad || (A.fa && A.fa.running)));
+  setWake(!!(A.rest || A.sw || lad || (A.fa && A.fa.running) || (ivRunning() && !A.pausedAt)));
 });
 export const hasActive = () => !!A;
 export { fmtDur, relDay, fmtDate };

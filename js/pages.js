@@ -8,6 +8,7 @@ import { ic, P, tabbar, on, openSheet, closeSheet, ask, confirmSheet, actionShee
 
 let homePick = null; let homeRounds = {};
 const badgeFor = (r) => {
+  if (r.badge) return r.badge;
   const m = r.name.match(/(\d+)$/); if (m && r.kind !== 'program') return m[1];
   if (r.kind === 'program') return r.id.endsWith('-rec') ? 'R' : 'T' + r.name.match(/\d/)?.[0];
   return r.name.slice(0, 2);
@@ -70,6 +71,7 @@ export function today() {
   if (last) metaBits.push(`<span>Last done: <b>${esc(last.routineName)}, ${relDay(last.startedAt)}</b></span>`);
   if (r.kind === 'followalong') { const n = D.nextSeriesNum(r.series); const s = D.series(r.series).sessions[n - 1]; metaBits.push(`<span>Next: <b>#${n} ${esc(s.title)}</b></span>`); }
   else if (r.kind === 'ladder') metaBits.push(`<span>${r.sequences.length} sequences · for time</span>`);
+  else if (r.kind === 'intervals') metaBits.push(`<span>${r.intervals.count} × ${esc(D.fmtMin(r.intervals.workSec))} hard · ~${Math.round(D.ivTotal(r.intervals) / 60)} min</span>`);
   else metaBits.push(`<span>${D.routineCount(r)} exercises</span>`);
   hero += `<div class="meta">${metaBits.join('<span class="dot"></span>')}</div>`;
   if (r.kind === 'circuit') {
@@ -92,7 +94,7 @@ export function today() {
   else syncLine = `${ic(P.circleCheck, 15, '#8e8e93', 2)}Synced to Google Sheet${st.lastOk ? ' · ' + ago(st.lastOk) : ''}`;
 
   const sm = D.weeklySummary();
-  const others = [...new Set([...rot, ...D.allRoutines().filter(x => x.kind === 'followalong').map(x => x.id)])].filter(id => id !== r.id).map(id => D.routine(id)).filter(Boolean);
+  const others = [...new Set([...rot, ...D.allRoutines().filter(x => x.kind === 'followalong' || x.kind === 'intervals').map(x => x.id)])].filter(id => id !== r.id).map(id => D.routine(id)).filter(Boolean);
   if (pickId !== sugg && sugg && !others.find(o => o.id === sugg)) others.unshift(D.routine(sugg));
   const rows = others.map(o => { const ls = D.lastSessionOf(o.id); return `<button class="row" data-act="homePick" data-r="${o.id}"><div class="badge num${badgeFor(o).length > 2 ? ' sm' : ''}">${esc(badgeFor(o))}</div><div class="t"><b>${esc(o.name)}</b><span>${esc(D.routineMeta(o))}</span></div>
     <div class="when">${ls ? fmtShort(ls.startedAt) : ''}</div>${ic(P.chevR, 16, '#5a5a5e', 2.4)}</button>`; }).join('');
@@ -172,6 +174,12 @@ export function routineDetail(id) {
     body += `<div class="section-label">Progression (as printed)</div><div class="card" style="padding:12px 16px"><ul class="bul sm" style="margin:0">${p.progression.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`;
   } else if (r.kind === 'ladder') {
     body = `<div class="card list">${r.sequences.map((s, i) => exRow(s.a, 'S' + (i + 1), `${D.exercise(s.a).name} ${r.top}→1 + ${D.exercise(s.b).name} 1→${r.top}`)).join('')}</div><p class="pad muted" style="font-size:13px;margin:10px 20px">${esc(r.restNote)}</p>`;
+  } else if (r.kind === 'intervals') {
+    const c = r.intervals, z = r.zones || {};
+    const kv = (a, b2, sub) => `<div class="kv2"><span>${esc(a)}${sub ? `<small>${esc(sub)}</small>` : ''}</span><b class="num">${esc(b2)}</b></div>`;
+    body = `<div class="card list nobadge ivplan">${kv('Warm-up', D.fmtMin(c.warmupSec), z.easy)}${kv(`${c.count} hard intervals`, `${c.count} × ${D.fmtMin(c.workSec)}`, z.hard)}${kv('Recovery between', D.fmtMin(c.recoverySec), z.rec || z.easy)}${kv('Cool-down', D.fmtMin(c.cooldownSec), z.easy)}${kv('Total', `~${Math.round(D.ivTotal(c) / 60)} min`)}</div>
+      <p class="pad muted" style="font-size:13px;margin:10px 20px">A guided timer runs the phases for you. You can change the durations before you start. Log RPE, optional average HR and (on stairs) flights for each interval.</p>
+      <div class="card list">${exRow(r.ex, r.badge || '4×4', 'How it works: target zone, talk test, how often')}</div>`;
   } else if (r.kind === 'followalong') {
     body = `<div class="pad"><a class="btn-secondary" href="#/series/${r.series}">Browse all ${D.series(r.series).sessions.length} sessions</a></div>`;
   }
@@ -242,7 +250,7 @@ export function exercises() {
   const order = ['My exercises', ...(D.SEED.groupOrder || [])];
   const lastMap = new Map(); for (const st of db.list('sets')) if (!st.deleted) lastMap.set(st.exerciseId, Math.max(lastMap.get(st.exerciseId) || 0, st.date || 0));
   const sec = Object.keys(groups).sort((a, b) => (order.indexOf(a) + 99) % 99 - (order.indexOf(b) + 99) % 99).map(g => `<div class="section-label" data-group>${esc(g)}</div><div class="card list nobadge" style="border-radius:16px">${groups[g].sort((a, b) => a.name.localeCompare(b.name)).map(e =>
-    `<a class="row" href="#/exercise/${encodeURIComponent(e.id)}" data-name="${esc(e.name.toLowerCase())}"><div class="t"><b>${esc(e.name)}</b><span>${esc([e.fields.map(f => f === 'rir' || f === 'rpe' ? f.toUpperCase() : f).join(' · '), e.eachSide ? 'each side' : '', e.rehab === 'rehab' ? 'rehab' : ''].filter(Boolean).join(' · '))}</span></div><div class="when">${lastMap.get(e.id) ? fmtShort(lastMap.get(e.id)) : ''}</div>${ic(P.chevR, 16, '#5a5a5e', 2.4)}</a>`).join('')}</div>`).join('');
+    `<a class="row" href="#/exercise/${encodeURIComponent(e.id)}" data-name="${esc(e.name.toLowerCase())}"><div class="t"><b>${esc(e.name)}</b><span>${esc([e.fields.map(f => f === 'rir' || f === 'rpe' || f === 'hr' ? f.toUpperCase() : f).join(' · '), e.eachSide ? 'each side' : '', e.rehab === 'rehab' ? 'rehab' : ''].filter(Boolean).join(' · '))}</span></div><div class="when">${lastMap.get(e.id) ? fmtShort(lastMap.get(e.id)) : ''}</div>${ic(P.chevR, 16, '#5a5a5e', 2.4)}</a>`).join('')}</div>`).join('');
   const html = `<div class="hdr"><div><div class="eyebrow">Library · ${all.length}</div><h1>Exercises</h1></div><a class="circbtn" href="#/exercise-edit/new" aria-label="New exercise" style="margin-bottom:3px">${ic(P.plus, 20, '#fff', 2.4)}</a></div>
     <div class="searchbox">${ic(P.search, 18, '#8e8e93')}<input type="search" placeholder="Search" data-filter="lib" value="${esc(exFilter)}" autocomplete="off"></div>${sec}
     ${(D.SEED.libraryNotes || []).map(n => `<p class="muted pad" style="font-size:12.5px;margin:14px 20px">${esc(n)}</p>`).join('')}
@@ -264,6 +272,7 @@ function setRowHTML(st, label, ex) {
   if (st.reps != null) v.push(`${st.weight != null ? '<span class="x">×</span>' : ''}<b>${fmtNum(st.reps)}</b>${st.weight == null ? ' reps' : ''}`);
   if (st.timeSec != null) v.push(`${v.length ? '<span class="x">·</span>' : ''}<b>${fmtClock(st.timeSec)}</b>`);
   if (st.flights != null) v.push(`${v.length ? '<span class="x">·</span>' : ''}<b>${fmtNum(st.flights)}</b> flights`);
+  if (st.hr != null) v.push(`${v.length ? '<span class="x">·</span>' : ''}<b>${fmtNum(st.hr)}</b> bpm`);
   if (st.variant) v.push(`<span style="margin-left:6px">${esc(st.variant)}</span>`);
   const right = st.rir != null ? `RIR <b>${fmtNum(st.rir)}</b>` : st.rpe != null ? `RPE <b>${fmtNum(st.rpe)}</b>` : '';
   return `<button class="sr num" data-act="editSet" data-id="${esc(st.id)}"><div class="rn">${esc(label)}</div><div class="v">${v.join('') || '<span>–</span>'}</div><div class="rir">${right}</div></button>`;
@@ -277,7 +286,7 @@ export function exerciseHist(id) {
     const prev = h[i + 1]; const mx = (s) => Math.max(...s.sets.map(y => y.weight ?? -1));
     let right = `<span>${x.sets.length} ${x.sets.some(s => s.round) ? 'round' : 'set'}${x.sets.length === 1 ? '' : 's'}</span>`;
     if (prev && mx(x) > mx(prev) && mx(prev) >= 0) right = `<div class="up">${ic(P.up, 14, A_COLOR, 2.8)}+${fmtNum(mx(x) - mx(prev))} kg</div>`;
-    const rows = x.sets.map((st, j) => setRowHTML(st, st.round ? `Round ${st.round}` : st.block && /^Sequence/.test(st.block) ? st.block : `Set ${j + 1}`, ex)).join('');
+    const rows = x.sets.map((st, j) => setRowHTML(st, st.round ? `Round ${st.round}` : st.block && /^(Sequence|Interval)/.test(st.block) ? st.block : `Set ${j + 1}`, ex)).join('');
     const notes = [...new Set(x.sets.map(s => s.note).filter(Boolean))];
     const sw = x.sets.find(s => s.swappedFrom);
     return `<div class="card sess"><div class="sh"><div><b>${fmtDate(x.session.startedAt)}</b> <span>· ${esc(x.session.routineName || '')}${x.session.week ? ' · S' + x.session.week : ''}</span></div>${right}</div>${rows}
@@ -308,8 +317,8 @@ async function manualSet(exId) {
 }
 const sfDisp = (f, v) => (v == null || v === '' ? '–' : f === 'time' ? fmtClock(v) : fmtNum(v) + (f === 'weight' ? ' kg' : ''));
 function setForm(ex, st, withDate = false, src = {}) {
-  const fields = [...new Set([...(ex ? ex.fields : []), ...['weight', 'reps', 'rir', 'rpe', 'time', 'flights', 'variant'].filter(f => st[f === 'time' ? 'timeSec' : f] != null)])];
-  const lab = { weight: 'Weight (kg)', reps: 'Reps', rir: 'RIR', rpe: 'RPE', time: 'Time (m:ss)', flights: 'Flights', variant: 'Variant' };
+  const fields = [...new Set([...(ex ? ex.fields : []), ...['weight', 'reps', 'rir', 'rpe', 'time', 'flights', 'hr', 'variant'].filter(f => st[f === 'time' ? 'timeSec' : f] != null)])];
+  const lab = { weight: 'Weight (kg)', reps: 'Reps', rir: 'RIR', rpe: 'RPE', time: 'Time (m:ss)', flights: 'Flights', hr: 'Avg HR (bpm)', variant: 'Variant' };
   const raw = (f) => (f === 'time' ? st.timeSec : st[f]);
   const d = new Date(st.date || Date.now()); const dv = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   return ask(`<div class="sh-title" data-ex="${esc(ex ? ex.id : st.exerciseId)}">${esc(ex ? ex.name : st.exerciseName)}</div>
@@ -352,7 +361,7 @@ on('editSet', async (el) => {
 
 // ---------------------------------------------------------------- EXERCISE EDITOR
 let exEdit = null;
-const FIELD_LABELS = { weight: 'Weight', reps: 'Reps', rir: 'RIR', rpe: 'RPE', time: 'Time', flights: 'Flights', variant: 'Variant' };
+const FIELD_LABELS = { weight: 'Weight', reps: 'Reps', rir: 'RIR', rpe: 'RPE', time: 'Time', flights: 'Flights', hr: 'Avg HR', variant: 'Variant' };
 export function exerciseEdit(id) {
   if (!exEdit || exEdit._for !== id) {
     const src = id === 'new' ? { id: uid('my-'), name: '', fields: ['weight', 'reps', 'rpe'], equip: null, eachSide: false, rest: 90, tempo: '', rehab: null, video: '', cues: [], srcNotes: [], variants: [], source: 'My exercise', group: 'My exercises', custom: true }
@@ -424,7 +433,7 @@ export function sessionDetail(id) {
   for (const st of sets) { if (!byEx.has(st.exerciseId)) byEx.set(st.exerciseId, []); byEx.get(st.exerciseId).push(st); }
   const cards = [...byEx].map(([exId, list]) => { const ex = D.exercise(exId);
     return `<div class="card setcard"><h3><a href="#/exercise/${encodeURIComponent(exId)}">${esc(ex ? ex.name : list[0].exerciseName)}</a><span>${list[0].swappedFrom ? 'swapped in' : ''}</span></h3>${list.map((st, j) => setRowHTML(st, st.round ? `Round ${st.round}` : st.block && st.block.length < 12 ? st.block : `Set ${j + 1}`, ex)).join('')}${[...new Set(list.map(x => x.note).filter(Boolean))].map(n => `<div class="snote">${esc(n)}</div>`).join('')}</div>`; }).join('');
-  const pills = [s.durationSec ? fmtDur(s.durationSec) : '', s.week ? `Week S${s.week}` : '', s.roundsDone != null && s.kind === 'circuit' ? `${s.roundsDone}/${s.rounds} rounds` : '', s.roundsDone != null && s.series ? `${s.roundsDone} rounds` : '',
+  const pills = [s.durationSec ? fmtDur(s.durationSec) : '', s.week ? `Week S${s.week}` : '', s.roundsDone != null && s.kind === 'circuit' ? `${s.roundsDone}/${s.rounds} rounds` : '', s.roundsDone != null && s.series ? `${s.roundsDone} rounds` : '', s.intervals ? `${s.roundsDone ?? 0}/${s.rounds} intervals logged` : '', s.intervals && s.intervals.timerSec ? `timer ${fmtClock(s.intervals.timerSec)}${s.intervals.timerDone ? '' : ' (stopped early)'}` : '',
     s.effort ? `effort ${s.effort}/10` : '', s.forTimeSec ? `for time ${fmtClock(s.forTimeSec)}` : '', s.warmup || ''].filter(Boolean);
   const html = `<div class="nav">${back('History', '#/history')}</div>
     <div class="ttl"><div class="eyebrow">${esc(fmtDate(s.startedAt))}${s.imported ? '' : ' · ' + fmtTime(s.startedAt)}</div><h1>${esc(s.routineName)}</h1>${s.title ? `<div class="muted" style="font-size:18px;font-weight:600;margin-top:2px">${esc(s.title)}</div>` : ''}</div>

@@ -6,6 +6,7 @@ import * as Pg from './pages.js';
 import * as sync from './sync.js';
 import { actions, tabbar, closeAllSheets, sheetOpen, toast } from './ui.js';
 import { unlockAudio } from './timers.js';
+import * as T from './timers.js';
 
 const routes = [
   [/^#\/today$/, () => Pg.today()], [/^#\/routines$/, () => Pg.routines()], [/^#\/routine\/(.+)$/, (m) => Pg.routineDetail(decodeURIComponent(m[1]))],
@@ -86,4 +87,4 @@ async function boot() {
 }
 boot();
 // test/debug hook
-window.__app = { db, D, W, sync };
+window.__app = { db, D, W, sync, T };

@@ -1,6 +1,7 @@
 // Domain data: seed + user data, queries, hints, summary, CSV.
 import * as db from './db.js';
 import { uid, num, parseRange, weekStart, isoDate, fmtNum } from './util.js';
+import { STARTERS } from './starters.js';
 
 export let SEED = null;
 let BASE = null;
@@ -19,8 +20,16 @@ export const clampRpe = (v) => v == null || isNaN(v) ? null : Math.min(RPE_MAX, 
 export async function loadSeed() {
   const r = await fetch('./data/seed.json');
   BASE = await r.json();
+  addStarters(BASE);
   applyPacks();
 }
+// Built-in starter content (e.g. Norwegian 4x4) is also bundled in starters.js: anything missing from seed.json
+// (say, a seed cached by an older version) is added, so it always shows up as a built-in routine.
+function addStarters(base) {
+  for (const k of ['exercises', 'routines']) { base[k] = base[k] || []; for (const x of STARTERS[k] || []) if (!base[k].some(y => y.id === x.id)) base[k].push(x); }
+  base.groupOrder = base.groupOrder || []; for (const g of STARTERS.groupOrder || []) if (!base.groupOrder.includes(g)) base.groupOrder.push(g);
+}
+export const starterIds = () => ({ exercises: (STARTERS.exercises || []).map(x => x.id), routines: (STARTERS.routines || []).map(x => x.id) });
 // Content packs (imported programme files) live in kv as 'pack:<id>' and are merged over the built-in seed,
 // so imported routines/exercises behave exactly like built-in ones (and survive offline / backups).
 export const installedPacks = () => db.list('kv').filter(r => r.k.startsWith('pack:') && r.v).map(r => r.v).sort((a, b) => (a.importedAt || 0) - (b.importedAt || 0));
@@ -91,12 +100,23 @@ export function routineCount(r) {
   if (r.kind === 'circuit' || r.kind === 'straight') return (r.items || []).length;
   if (r.kind === 'program') return r.blocks.reduce((a, b) => a + (b.items ? b.items.length : 1), 0);
   if (r.kind === 'ladder') return r.sequences.length;
+  if (r.kind === 'intervals') return 1;
   return 0;
 }
+// ---------------- interval sessions (Norwegian 4x4): warm-up, N x (hard interval [+ recovery]), cool-down
+export function ivPhases(cfg) {
+  const ph = [{ t: 'warm', sec: cfg.warmupSec }];
+  for (let i = 1; i <= cfg.count; i++) { ph.push({ t: 'work', n: i, sec: cfg.workSec }); if (i < cfg.count) ph.push({ t: 'rec', n: i, sec: cfg.recoverySec }); }
+  ph.push({ t: 'cool', sec: cfg.cooldownSec });
+  return ph.filter(p => p.sec > 0);
+}
+export const ivTotal = (cfg) => ivPhases(cfg).reduce((a, p) => a + p.sec, 0);
+export const fmtMin = (sec) => (sec % 60 ? `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')} min` : `${sec / 60} min`);
 export function routineMeta(r) {
   if (r.kind === 'ladder') return `${r.subtitle} · for-time ladder`;
   if (r.kind === 'followalong') { const n = nextSeriesNum(r.series); const s = series(r.series).sessions[n - 1]; return `Next: #${n} ${s.title}`; }
   if (r.kind === 'program') return `${r.subtitle} · Week ${progWeek(r.programme)} of 4`;
+  if (r.kind === 'intervals') return `${r.intervals.count} × ${fmtMin(r.intervals.workSec)} hard · ~${Math.round(ivTotal(r.intervals) / 60)} min`;
   const n = routineCount(r); return `${r.subtitle ? r.subtitle + ' · ' : ''}${n} exercise${n === 1 ? '' : 's'}`;
 }
 export const getRotation = () => (db.kvGet('rotation', null) || SEED.rotation || []).filter(id => routine(id));
@@ -241,7 +261,7 @@ export function hint(ex, target, last) {
 }
 
 // ---------------- summary
-function bestScore(st) { return st.weight != null ? st.weight * 1000 + (st.reps || 0) : st.reps != null ? st.reps : st.timeSec || 0; }
+function bestScore(st) { if (st.block && /^Interval \d/.test(st.block)) return st.flights || 0; return st.weight != null ? st.weight * 1000 + (st.reps || 0) : st.reps != null ? st.reps : st.timeSec || 0; }
 export function weeklySummary(now = Date.now()) {
   const ws = weekStart(now);
   const all = sessions().filter(s => s.endedAt || s.imported);
@@ -324,7 +344,18 @@ function migrateRirToRpe() {
   }
   return n;
 }
-const MIGRATIONS = [['stair-rpe-1', migrateStairRpe], ['rir-rpe-1', migrateRirToRpe]];
+// starters-n4x4-1: make sure an existing install has the new built-in Norwegian 4x4 routine + exercise. Built-ins come
+// from seed.json / starters.js (added by addStarters even if the cached seed is older); this also brings back a
+// stored copy that was marked deleted. Nothing logged is touched, and it is NOT added to the rotation.
+function migrateStarters() {
+  let n = 0;
+  for (const [store, list] of [['routines', STARTERS.routines || []], ['exercises', STARTERS.exercises || []]]) for (const x of list) {
+    const cur = db.get(store, x.id);
+    if (cur && cur.deleted) { db.del(store, x.id); n++; }
+  }
+  return n;
+}
+const MIGRATIONS = [['stair-rpe-1', migrateStairRpe], ['rir-rpe-1', migrateRirToRpe], ['starters-n4x4-1', migrateStarters]];
 export async function runMigrations() {
   const done = new Set(db.kvGet('migrations', []) || []);
   const ran = [];
@@ -404,7 +435,7 @@ export async function importPack(d) {
 
 // ---------------- CSV
 export const CSV_COLS = ['record_type', 'id', 'session_id', 'date', 'start_time', 'routine', 'programme_week', 'block', 'exercise', 'exercise_id', 'swapped_from',
-  'set_no', 'round', 'weight_kg', 'reps', 'rir', 'rpe', 'time_s', 'flights', 'variant', 'duration_s', 'rounds_done', 'effort', 'knee_before', 'knee_after',
+  'set_no', 'round', 'weight_kg', 'reps', 'rir', 'rpe', 'time_s', 'flights', 'avg_hr', 'variant', 'duration_s', 'rounds_done', 'effort', 'knee_before', 'knee_after',
   'series', 'session_no', 'title', 'ladder', 'notes'];
 const csvCell = (v) => { if (v == null) return ''; const s = String(v); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
 export function sessionRow(s) {
@@ -418,7 +449,7 @@ export function setRow(st) {
   return { record_type: 'set', id: st.id, session_id: st.sessionId, date: isoDate(st.date || sess.startedAt), start_time: sess.startedAt ? new Date(sess.startedAt).toISOString() : '',
     routine: st.routineName || sess.routineName, programme_week: (st.week || sess.week) ? 'S' + (st.week || sess.week) : '', block: st.block, exercise: st.exerciseName,
     exercise_id: st.exerciseId, swapped_from: st.swappedFrom ? (exercise(st.swappedFrom)?.name || st.swappedFrom) : '', set_no: st.setNo, round: st.round,
-    weight_kg: st.weight, reps: st.reps, rir: st.rir, rpe: st.rpe, time_s: st.timeSec, flights: st.flights, variant: st.variant, notes: st.note };
+    weight_kg: st.weight, reps: st.reps, rir: st.rir, rpe: st.rpe, time_s: st.timeSec, flights: st.flights, avg_hr: st.hr, variant: st.variant, notes: st.note };
 }
 export function buildCSV() {
   const rows = [CSV_COLS.join(',')];
