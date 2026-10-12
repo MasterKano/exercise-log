@@ -8,7 +8,17 @@
  * Rows are written to the "Sessions" and "Sets" tabs (created with headers if missing).
  * Idempotent by record id: a record that is sent again (e.g. after an edit or a retry)
  * overwrites its existing row instead of adding a duplicate.
+ *
+ * GET ?action=import returns your programmes file from Google Drive, so the app can
+ * "Load my full file from Drive" (Settings > Google Sheet sync). Uses DriveApp, so the
+ * script asks for Drive access once (run authorizeDrive in the editor, see SETUP.md).
  */
+
+// Drive file the app loads with "Load my full file from Drive".
+// Leave FILE_ID empty to use the newest file named IMPORT_FILE_NAME in your Drive, or paste a file ID
+// (the long part of the file's Drive link, .../file/d/<FILE_ID>/view) to pin one exact file.
+var FILE_ID = '';
+var IMPORT_FILE_NAME = 'exercise-programmes-import.json';
 var SET_COLS = ['id', 'session_id', 'date', 'start_time', 'routine', 'programme_week', 'block', 'exercise', 'exercise_id', 'swapped_from',
   'set_no', 'round', 'weight_kg', 'reps', 'rir', 'rpe', 'time_s', 'flights', 'avg_hr', 'variant', 'notes', 'deleted', 'updated_at'];
 var SESSION_COLS = ['id', 'date', 'start_time', 'routine', 'programme_week', 'duration_s', 'rounds_done', 'effort', 'knee_before', 'knee_after',
@@ -30,8 +40,36 @@ function doPost(e) {
   }
 }
 
-function doGet() {
-  return json_({ ok: true, app: 'exlog', message: 'Exercise Log sync endpoint is running.' });
+function doGet(e) {
+  var action = e && e.parameter ? e.parameter.action : '';
+  if (action === 'import') {
+    try {
+      var file = importFile_();
+      if (!file) return json_({ ok: false, error: 'No file named ' + IMPORT_FILE_NAME + ' found in your Google Drive' });
+      var pack = JSON.parse(file.getBlob().getDataAsString('UTF-8'));
+      return json_({ ok: true, app: 'exlog', name: file.getName(), updated: file.getLastUpdated().toISOString(), pack: pack });
+    } catch (err) {
+      return json_({ ok: false, error: String(err) });
+    }
+  }
+  return json_({ ok: true, app: 'exlog', message: 'Exercise Log sync endpoint is running.', import: true });
+}
+
+function importFile_() {
+  if (FILE_ID) return DriveApp.getFileById(FILE_ID);
+  var it = DriveApp.getFilesByName(IMPORT_FILE_NAME), best = null;
+  while (it.hasNext()) {
+    var f = it.next();
+    if (f.isTrashed && f.isTrashed()) continue;
+    if (!best || f.getLastUpdated() > best.getLastUpdated()) best = f;
+  }
+  return best;
+}
+
+// Run this once from the editor (select it, click Run) so Google asks for Drive access.
+function authorizeDrive() {
+  var f = importFile_();
+  Logger.log(f ? 'Found ' + f.getName() + ' (' + f.getSize() + ' bytes)' : 'No ' + IMPORT_FILE_NAME + ' in Drive yet');
 }
 
 function upsert_(ss, name, cols, records) {

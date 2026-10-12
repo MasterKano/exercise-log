@@ -18,7 +18,18 @@ const back = (label, href) => `<a class="txtbtn" href="${href}" style="margin-le
 // ---------------------------------------------------------------- TODAY
 // ---------------------------------------------------------------- FIRST RUN
 const importBtn = (label, cls = 'btn-primary') => `<label class="${cls} filebtn">${ic(P.plus, 18, 'none', 0, cls === 'btn-primary' ? '#000' : '#fff')}${esc(label)}<input type="file" class="vh" accept=".json,application/json,text/plain" data-act="importFile" aria-label="${esc(label)}"></label>`;
-export const needsWelcome = () => !db.kvGet('onboarded') && !D.sessions().length && !D.installedPacks().length;
+// content pre-loaded with the app (programmes + sample history): no import step, just a dismissible notice on Today
+export const preloaded = () => !!(D.SEED.preloaded || (D.SEED.history || []).length);
+export const needsWelcome = () => !preloaded() && !db.kvGet('onboarded') && !D.sessions().length && !D.installedPacks().length;
+function preloadNotice() {
+  if (!preloaded() || db.kvGet('preloadNoticeDismissed')) return '';
+  const n = D.sampleHistoryCount();
+  return `<div class="card notice" id="preloadNotice"><b>Everything is pre-loaded</b>
+    <p>Routines, programme weeks with targets, warm-ups, follow-along sessions and video links are ready to use${n.sessions ? `, plus a sample history (${n.sessions} past sessions)` : ''}.
+    ${n.sessions ? 'To remove the sample history, go to Settings → Your data → <b>Delete sample history</b>. Your own logs are never touched.' : ''}</p>
+    <div class="btn-row"><button class="btn-secondary" data-act="dismissPreload">Got it</button>${n.sessions ? '<a class="btn-secondary" href="#/settings">Settings</a>' : ''}</div></div>`;
+}
+on('dismissPreload', () => { db.kvSet('preloadNoticeDismissed', Date.now()); db.kvSet('onboarded', db.kvGet('onboarded') || Date.now()); go('#/today'); });
 export function welcome() {
   const html = `<div class="welcome"><img src="./icons/icon-192.png" alt="" width="84" height="84" class="wlogo">
     <div class="eyebrow">Welcome</div><h1>Exercise Log</h1>
@@ -101,7 +112,7 @@ export function today() {
   const active = W.A ? `<a class="card resume" href="#/workout">${ic(P.timer, 22, A_COLOR, 2)}<b>${esc(W.A.title)} in progress<span>Started ${fmtTime(W.A.startedAt)} · tap to resume</span></b>${ic(P.chevR, 16, '#8e8e93', 2.4)}</a>` : '';
   const html = `<div class="hdr"><div><div class="eyebrow">${esc(fmtLong(Date.now()))}</div><h1>Today</h1></div>
       <button class="circbtn" style="margin-bottom:3px" data-act="exportCSV" aria-label="Export CSV">${ic(P.share, 19, '#fff', 2)}</button></div>
-    ${active}<div class="card hero">${hero}</div>
+    ${preloadNotice()}${active}<div class="card hero">${hero}</div>
     <div class="sync">${syncLine}</div>
     <div class="section-label">This week<a href="#/history">History</a></div>
     <div class="card summary num"><div><b>${sm.sessions}</b><span>sessions</span></div><div><b>${Math.round(sm.totalSec / 60)}</b><span>minutes</span></div><div><b>${sm.bests}</b><span>new bests</span></div><div><b>${sm.streak}</b><span>wk streak</span></div></div>
@@ -463,19 +474,22 @@ export function onSessNotes(el) { const s = db.get('sessions', el.dataset.sessno
 export function settings() {
   const st = sync.status(); const url = sync.getUrl(); const pend = sync.pending();
   const eq = D.equipment();
-  const persisted = window.__persisted; const packs = D.installedPacks();
+  const persisted = window.__persisted; const packs = D.installedPacks(); const sampleN = D.sampleHistoryCount();
   const line = !url ? 'Sync is off. Everything is saved on this phone.' : st.syncing ? 'Syncing…' : st.lastError ? `Last attempt failed: ${esc(st.lastError)}` : st.lastOk ? `Last synced ${ago(st.lastOk)}.` : 'Not synced yet.';
   const html = `<div class="hdr"><div><div class="eyebrow">Exercise Log</div><h1>Settings</h1></div></div>
     <div class="section-label">Google Sheet sync (optional)</div>
     <div class="setgroup"><p>Paste the web app URL from your Google Apps Script (see SETUP.md in the app folder). Records are sent in the background, one row per set or session, and retried when you're back online.</p>
       <label class="field"><span>Apps Script web app URL</span><input class="input" type="url" id="syncUrl" value="${esc(url)}" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></label>
       <div class="btn-row"><button class="btn-secondary" data-act="saveSync">Save</button><button class="btn-primary" style="min-height:52px;font-size:17px" data-act="syncNow" ${url ? '' : 'disabled'}>Sync now</button></div>
-      <div class="status-line${st.lastError && url ? ' err' : ''}">${line}</div><div class="status-line">${pend} record${pend === 1 ? '' : 's'} waiting.</div></div>
-    <div class="section-label">Your data</div>
+      <div class="status-line${st.lastError && url ? ' err' : ''}">${line}</div><div class="status-line">${pend} record${pend === 1 ? '' : 's'} waiting.</div>
+      <button class="btn-secondary mt8" data-act="driveLoad" ${url ? '' : 'disabled'}>${ic(P.plus, 18)} Load my full file from Drive</button>
+      <p>Reads <b>exercise-programmes-import.json</b> from your Google Drive through the same web app and merges it (nothing is duplicated, your logs stay). Needs the updated script from SETUP.md.</p></div>
+    <div class="section-label" id="data">Your data</div>
     <div class="setgroup"><p>Export every set and session as a CSV file (one row each), or make a full backup you can restore later.</p>
       <button class="btn-primary" data-act="exportCSV">${ic(P.share, 19, '#000', 2)} Export CSV</button>
       <div class="btn-row mt8"><button class="btn-secondary" data-act="backupJSON">Backup (JSON)</button>${importBtn('Restore / import', 'btn-secondary')}</div>
       <p>Restore takes a backup or a programmes file. Programmes files are merged: your logged sessions stay, and importing the same file again adds nothing twice.</p>
+      ${sampleN.sessions || sampleN.sets ? `<button class="btn-secondary danger mt8" data-act="delSample">${ic(P.trash, 18)} Delete sample history</button><p>Removes only the ${sampleN.sessions} pre-loaded sample sessions (${sampleN.sets} sets). Everything you logged yourself stays.</p>` : ''}
       <div class="status-line">${D.sessions().length} sessions · ${db.list('sets').filter(s => !s.deleted).length} sets stored on this phone. Storage ${persisted === true ? 'is persistent' : persisted === false ? 'may be cleared by Safari if unused for a long time (add to Home Screen to keep it)' : 'status unknown'}.</div></div>
     <div class="section-label">Equipment</div>
     <div class="setgroup"><label class="field"><span>Kettlebells (kg, comma separated)</span><input class="input num" id="kbList" value="${eq.kb.join(', ')}"></label>
@@ -487,7 +501,7 @@ export function settings() {
     <div class="section-label">Programmes files</div>
     <div class="setgroup">${packs.length ? packs.map(pk => `<p><b>${esc(pk.name || pk.id)}</b><br>${(pk.content?.routines || []).length} routines · ${(pk.content?.exercises || []).length} exercises${pk.history?.count ? ` · ${pk.history.count} history entries` : ''} · imported ${esc(fmtDate(pk.importedAt))}</p>
       ${(pk.history?.skipped || []).length ? `<details class="skipped"><summary>${pk.history.skipped.length} history entries were skipped (ambiguous)</summary><ul class="bul sm">${pk.history.skipped.map(x => `<li><b>${esc(x.exercise)}</b> · ${esc(x.when)}: “${esc(x.written)}”<small>${esc(x.why)}</small></li>`).join('')}</ul></details>` : ''}`).join('')
-      : '<p>None imported. The app has a few basic exercises; import a programmes file to add routines, cue sheets and video links.</p>'}
+      : `<p>${preloaded() ? 'None imported. The built-in programmes are already loaded; import your own programmes file to add or update content.' : 'None imported. The app has a few basic exercises; import a programmes file to add routines, cue sheets and video links.'}</p>`}
       ${importBtn('Import programmes file', 'btn-secondary')}</div>
     <div class="section-label">About</div>
     <div class="setgroup"><p>Offline-first: data lives in this phone's storage (IndexedDB). Beeps play at 10 s left and at 0 while the app is open; iPhone can't beep while locked. The screen stays awake while a timer runs.</p>
@@ -501,6 +515,20 @@ on('saveEquip', () => {
   const kb = document.getElementById('kbList').value.split(',').map(x => num(x)).filter(x => x > 0).sort((a, b) => a - b);
   db.kvSet('equipment', { kb: kb.length ? kb : [12, 16, 20, 24], dbStep: num(document.getElementById('dbStep').value) || 2, bbStep: num(document.getElementById('bbStep').value) || 2.5, machineStep: num(document.getElementById('machineStep').value) || 2.5, plateStep: 2.5 });
   toast('Equipment saved');
+});
+on('delSample', async () => {
+  const n = D.sampleHistoryCount();
+  if (!(await confirmSheet('Delete sample history?', `Removes the ${n.sessions} pre-loaded sample sessions and their ${n.sets} sets. Sessions and sets you logged yourself are kept.`, 'Delete', true))) return;
+  const r = await D.deleteSampleHistory(); window.__lastSampleDelete = r; sync.soon(); toast(`Deleted ${r.sessions} sample sessions`); go('#/settings');
+});
+on('driveLoad', async (el) => {
+  el.disabled = true; toast('Loading from Drive…');
+  try {
+    const r = await sync.loadFromDrive(); window.__lastImport = r; homePick = null;
+    const bits = [`${r.routines} routines`, `${r.exercises} exercises`]; if (r.sessionsAdded) bits.push(`${r.sessionsAdded} past sessions`);
+    toast(r.replaced && !r.sessionsAdded && !r.setsAdded ? `${r.name} is up to date (nothing duplicated)` : `Loaded from Drive: ${bits.join(', ')}`);
+  } catch (e) { window.__lastImport = { error: e.message }; toast('Drive load failed: ' + e.message); }
+  go('#/settings');
 });
 on('wipeAll', async () => {
   if (!(await confirmSheet('Erase everything?', 'All sessions, sets, custom exercises and settings on this phone will be deleted. Make a backup first.', 'Erase', true))) return;

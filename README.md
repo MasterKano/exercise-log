@@ -3,8 +3,8 @@
 Offline-first workout logger (installable web app). No backend: data lives in your browser's storage (IndexedDB).
 
 - Open the site in Safari on iPhone, then Share → Add to Home Screen.
-- First run: **Import your programmes** (a private `.json` programmes file) or **Start empty**.
+- Opens with the routines, programmes, follow-along sessions and a sample history already loaded. Settings → Your data → **Delete sample history** removes the sample sessions (never your own logs).
 - Settings → Your data: CSV export, JSON backup, restore/import (imports merge and never duplicate).
 - Optional Google Sheet sync: see `apps-script/SETUP.md`.
 
-The site ships with a few generic starter exercises only. Programme content is loaded from your own file and stays on your device.
+Your full programmes file can also be imported (Settings) or loaded from Google Drive through the sync web app (see `apps-script/SETUP.md`). Logs stay on your device.

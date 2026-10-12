@@ -1,7 +1,7 @@
 // Optional Google Sheet sync: POSTs unsynced records to a Google Apps Script web app.
 // Uses Content-Type text/plain so the browser sends a "simple" request (no CORS preflight).
 import * as db from './db.js';
-import { setRow, sessionRow } from './data.js';
+import { setRow, sessionRow, importPack, isPack } from './data.js';
 
 let busy = false, timer = null, listeners = new Set();
 export const getUrl = () => db.kvGet('syncUrl', '');
@@ -62,4 +62,19 @@ export function start() {
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') soon(1000); });
   clearInterval(timer); timer = setInterval(() => { if (getUrl() && pending()) syncNow(); }, 60000);
   soon(1500);
+}
+
+// "Load my full file from Drive": GET <web app URL>?action=import. Code.gs reads exercise-programmes-import.json from
+// your Drive and returns it. A plain GET with no custom headers is a "simple" request (no CORS preflight), like the POST above.
+export async function loadFromDrive() {
+  const url = getUrl(); if (!url) throw new Error('Save your Apps Script web app URL first');
+  if (!navigator.onLine) throw new Error('You are offline');
+  const res = await fetch(url + (url.includes('?') ? '&' : '?') + 'action=import', { method: 'GET', redirect: 'follow' });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  let j; try { j = await res.json(); } catch (e) { throw new Error('Unexpected reply (redeploy the script as a new version, see SETUP.md)'); }
+  if (j && j.ok === false) throw new Error(j.error || 'The script could not read the file');
+  if (j && j.app === 'exlog' && j.message && !j.pack) throw new Error('The deployed script is the old version: redeploy it as a new version (SETUP.md)');
+  const pack = j && j.pack ? j.pack : j;
+  if (!isPack(pack)) throw new Error('The Drive file is not an Exercise Log programmes file');
+  return { ...(await importPack(pack)), file: j.name || null, fileUpdated: j.updated || null };
 }

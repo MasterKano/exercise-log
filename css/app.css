@@ -456,3 +456,9 @@ button.f{color:#fff}
 .wk2.iv .big{font-size:30px;line-height:34px}
 .wk2.iv .big span{display:block;margin:2px 0 0;line-height:18px}
 .wk2.iv .kv{white-space:nowrap}
+/* first-open notice (pre-loaded content) */
+.notice{margin:6px 16px 12px;padding:14px 16px;border-radius:16px;border:1px solid #1d4a52;background:#0b1a1d}
+.notice b{font-size:16px}
+.notice p{font-size:14px;line-height:19px;color:var(--t2);margin:6px 0 12px}
+.notice p b{font-size:14px;color:#fff}
+.notice .btn-secondary{min-height:44px}

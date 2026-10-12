@@ -407,6 +407,26 @@ export function importSeedHistory() {
   return r.setsAdded;
 }
 
+// ---------------- sample (imported) history: fixed 'imp-' ids. Deleting it never touches your own logs:
+// only imp- sets go, and an imp- session goes only once it has no sets of yours left in it.
+const isImpId = (id) => typeof id === 'string' && id.startsWith('imp-');
+export function sampleHistoryCount() {
+  const own = new Set(db.list('sets').filter(x => !x.deleted && !isImpId(x.id)).map(x => x.sessionId));   // sample sessions you added sets to are kept
+  return { sessions: db.list('sessions').filter(s => isImpId(s.id) && !s.deleted && !own.has(s.id)).length, sets: db.list('sets').filter(s => isImpId(s.id) && !s.deleted).length };
+}
+export async function deleteSampleHistory() {
+  let sets = 0, sessions = 0;
+  for (const st of db.list('sets')) if (isImpId(st.id) && !st.deleted) { deleteSet(st); sets++; }
+  for (const se of db.list('sessions')) {
+    if (!isImpId(se.id) || se.deleted) continue;
+    if (db.list('sets').some(x => x.sessionId === se.id && !x.deleted && !isImpId(x.id))) continue;   // you added your own sets to it: keep
+    if (se.everSynced) { se.deleted = true; saveSession(se); } else db.del('sessions', se.id); sessions++;
+  }
+  db.kvSet('historyImported', db.kvGet('historyImported') || Date.now()); db.kvSet('sampleHistoryDeleted', Date.now());
+  await db.flush();
+  return { sets, sessions };
+}
+
 // ---------------- programme import file ("content pack")
 export const isPack = (d) => d && d.app === 'exlog' && d.kind === 'content-pack';
 export async function importPack(d) {
