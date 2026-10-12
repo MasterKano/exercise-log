@@ -45,6 +45,12 @@ export function applyPacks() {
     if (c.libraryNote) S.libraryNotes.push(c.libraryNote);
   }
   for (const k of CONTENT_KEYS) for (const x of BASE[k] || []) if (!maps[k].has(x.id)) maps[k].set(x.id, x);
+  // built-in original cues win over the text an (older) imported programmes file carries for the same exercise / session.
+  // Your own edits are stored separately (db 'exercises') and My notes in kv, so neither is affected.
+  for (const b of BASE.exercises || []) { const x = maps.exercises.get(b.id); if (b.ownCues && x && x !== b) maps.exercises.set(b.id, { ...x, cues: b.cues, ownCues: true }); }
+  for (const b of BASE.series || []) { const x = maps.series.get(b.id); if (!x || x === b) continue;
+    const own = new Map(b.sessions.filter(q => q.ownNotes).map(q => [q.num, q.notes]));
+    if (own.size) maps.series.set(b.id, { ...x, sessions: x.sessions.map(q => own.has(q.num) ? { ...q, notes: own.get(q.num), ownNotes: true } : q) }); }
   for (const g of BASE.groupOrder || []) if (!S.groupOrder.includes(g)) S.groupOrder.push(g);
   if (BASE.libraryNote) S.libraryNotes.push(BASE.libraryNote);
   for (const k of CONTENT_KEYS) S[k] = [...maps[k].values()];

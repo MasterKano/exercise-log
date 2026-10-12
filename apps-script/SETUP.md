@@ -32,5 +32,6 @@ To use a specific file instead of searching by name, paste its ID into `var FILE
 **Good to know**
 - Anyone who has the URL can add rows to this sheet, and (with the Drive step) download your programmes file, so keep it private.
 - If you edit `Code.gs` later, use **Deploy → Manage deployments → Edit → Version: New version** so the same URL keeps working.
+- After updating `Code.gs`, redeploy a **New version** (Deploy → Manage deployments → Edit → Version: New version) and paste the same web app URL on every device so two-way sync (push + pull) stays in sync.
 - Offline? Records wait on the phone and are sent automatically when you're back online (and whenever you open the app).
 - To check the script is live, open the URL in a browser: it should say "Exercise Log sync endpoint is running."

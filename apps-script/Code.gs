@@ -12,6 +12,9 @@
  * GET ?action=import returns your programmes file from Google Drive, so the app can
  * "Load my full file from Drive" (Settings > Google Sheet sync). Uses DriveApp, so the
  * script asks for Drive access once (run authorizeDrive in the editor, see SETUP.md).
+ *
+ * GET ?action=pull&since=<ISO> returns Sessions and Sets rows updated after `since`
+ * (or all rows if since is empty) as JSON records with id, updatedAt, deleted and all fields.
  */
 
 // Drive file the app loads with "Load my full file from Drive".
@@ -52,7 +55,18 @@ function doGet(e) {
       return json_({ ok: false, error: String(err) });
     }
   }
-  return json_({ ok: true, app: 'exlog', message: 'Exercise Log sync endpoint is running.', import: true });
+  if (action === 'pull') {
+    try {
+      var since = (e.parameter && e.parameter.since) || '';
+      var ss = SpreadsheetApp.getActiveSpreadsheet();
+      return json_({ ok: true, app: 'exlog', since: since,
+        sessions: pull_(ss, 'Sessions', SESSION_COLS, since),
+        sets: pull_(ss, 'Sets', SET_COLS, since) });
+    } catch (err) {
+      return json_({ ok: false, error: String(err) });
+    }
+  }
+  return json_({ ok: true, app: 'exlog', message: 'Exercise Log sync endpoint is running.', import: true, pull: true });
 }
 
 function importFile_() {
@@ -97,6 +111,7 @@ function upsert_(ss, name, cols, records) {
   var appends = [], appendIdx = {}, done = [];
   records.forEach(function (rec) {
     if (!rec || rec.id == null) return;
+    if (!rec.updated_at) rec.updated_at = new Date().toISOString();
     var id = String(rec.id);
     var row = header.map(function (h) { var v = rec[h]; return v === undefined || v === null ? '' : v; });
     if (rowOf[id]) sh.getRange(rowOf[id], 1, 1, row.length).setValues([row]);
@@ -106,6 +121,40 @@ function upsert_(ss, name, cols, records) {
   });
   if (appends.length) sh.getRange(sh.getLastRow() + 1, 1, appends.length, header.length).setValues(appends);
   return done;
+}
+
+function pull_(ss, name, cols, since) {
+  var sh = ss.getSheetByName(name);
+  if (!sh || sh.getLastRow() < 2) return [];
+  var lastCol = Math.max(sh.getLastColumn(), cols.length);
+  var header = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(String);
+  var data = sh.getRange(2, 1, sh.getLastRow() - 1, lastCol).getValues();
+  var out = [];
+  data.forEach(function (vals) {
+    if (vals[header.indexOf('id')] === '' || vals[header.indexOf('id')] == null) return;
+    var rec = rowToRec_(header, vals);
+    if (since && rec.updatedAt && rec.updatedAt <= since) return;
+    out.push(rec);
+  });
+  return out;
+}
+
+function rowToRec_(header, vals) {
+  var rec = {};
+  header.forEach(function (h, i) {
+    if (!h) return;
+    var v = vals[i];
+    if (v instanceof Date) v = v.toISOString();
+    else if (v === '') v = '';
+    rec[h] = v;
+  });
+  rec.id = rec.id != null && rec.id !== '' ? String(rec.id) : '';
+  var ua = rec.updated_at;
+  if (ua instanceof Date) ua = ua.toISOString();
+  rec.updatedAt = ua ? String(ua) : '';
+  var d = rec.deleted;
+  rec.deleted = d === true || d === 'TRUE' || d === 'true' || d === 1 || d === '1';
+  return rec;
 }
 
 function json_(o) {
