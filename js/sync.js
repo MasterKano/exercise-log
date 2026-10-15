@@ -6,7 +6,7 @@ import { setRow, sessionRow, importPack, isPack } from './data.js';
 
 let busy = false, timer = null, listeners = new Set();
 export const getUrl = () => db.kvGet('syncUrl', '');
-export const setUrl = (u) => db.kvSet('syncUrl', (u || '').trim());
+export const setUrl = (u) => { u = (u || '').trim(); if (u !== getUrl()) { db.kvSet('driveLoaded', 0); db.kvSet('lastPulledAt', ''); } return db.kvSet('syncUrl', u); };
 export const status = () => db.kvGet('syncStatus', {}) || {};
 export function onStatus(fn) { listeners.add(fn); }
 function setStatus(patch) { db.kvSet('syncStatus', { ...status(), ...patch }); listeners.forEach(f => f()); }
@@ -124,6 +124,7 @@ export async function syncNow() {
   if (!navigator.onLine) { setStatus({ lastError: 'Offline – will retry when online', lastTry: Date.now() }); return { offline: true }; }
   busy = true; setStatus({ syncing: true });
   try {
+    if (!db.kvGet('driveLoaded')) await autoLoad();
     let total = 0;
     for (let guard = 0; guard < 50; guard++) {
       const q = queue(); if (!q.sessions.length && !q.sets.length) break;
@@ -168,6 +169,14 @@ export function start() {
 
 // "Load my full file from Drive": GET <web app URL>?action=import. Code.gs reads exercise-programmes-import.json from
 // your Drive and returns it. A plain GET with no custom headers is a "simple" request (no CORS preflight), like the POST above.
+// New device: first sync (or after saving a URL) loads the private programmes file once, then the normal pull fetches history.
+export async function autoLoad(force) {
+  if (!force && db.kvGet('driveLoaded')) return { skipped: true };
+  try {
+    const r = await loadFromDrive(); window.__lastImport = r;
+    db.kvSet('driveLoaded', Date.now()); setStatus({ driveError: null }); return r;
+  } catch (e) { const m = String(e.message || e); setStatus({ driveError: m }); return { error: m }; }
+}
 export async function loadFromDrive() {
   const url = getUrl(); if (!url) throw new Error('Save your Apps Script web app URL first');
   if (!navigator.onLine) throw new Error('You are offline');

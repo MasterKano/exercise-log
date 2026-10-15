@@ -17,10 +17,8 @@ const back = (label, href) => `<a class="txtbtn" href="${href}" style="margin-le
 
 // ---------------------------------------------------------------- TODAY
 // ---------------------------------------------------------------- FIRST RUN
-const importBtn = (label, cls = 'btn-primary') => `<label class="${cls} filebtn">${ic(P.plus, 18, 'none', 0, cls === 'btn-primary' ? '#000' : '#fff')}${esc(label)}<input type="file" class="vh" accept=".json,application/json,text/plain" data-act="importFile" aria-label="${esc(label)}"></label>`;
 // content pre-loaded with the app (programmes + sample history): no import step, just a dismissible notice on Today
 export const preloaded = () => !!(D.SEED.preloaded || (D.SEED.history || []).length);
-export const needsWelcome = () => !preloaded() && !db.kvGet('onboarded') && !D.sessions().length && !D.installedPacks().length;
 function preloadNotice() {
   if (!preloaded() || db.kvGet('preloadNoticeDismissed')) return '';
   const n = D.sampleHistoryCount();
@@ -30,49 +28,16 @@ function preloadNotice() {
     <div class="btn-row"><button class="btn-secondary" data-act="dismissPreload">Got it</button>${n.sessions ? '<a class="btn-secondary" href="#/settings">Settings</a>' : ''}</div></div>`;
 }
 on('dismissPreload', () => { db.kvSet('preloadNoticeDismissed', Date.now()); db.kvSet('onboarded', db.kvGet('onboarded') || Date.now()); go('#/today'); });
-export function welcome() {
-  const html = `<div class="welcome"><img src="./icons/icon-192.png" alt="" width="84" height="84" class="wlogo">
-    <div class="eyebrow">Welcome</div><h1>Exercise Log</h1>
-    <p>Log sets, circuits, programme weeks and follow-along sessions. Everything is saved on this phone and works offline.</p>
-    <p>If you have a programmes file (<b>.json</b>), import it to load your routines, cue sheets, video links and past sessions. Otherwise start with a few basic exercises and build your own routines.</p>
-    <div class="wbtns">${importBtn('Import your programmes')}<button class="btn-secondary mt8" data-act="startEmpty">Start empty</button></div>
-    <p class="muted" style="font-size:13px">You can import a programmes file later from Settings → Your data. Importing never deletes what you've logged.</p></div>`;
-  return { html, noTab: true };
-}
-on('startEmpty', () => { db.kvSet('onboarded', Date.now()); go('#/today'); });
-async function handleImportFile(el, fromSettings) {
-  const file = el.files && el.files[0]; if (!file) return;
-  let d; try { d = D.parseImport(await file.text()); } catch (e) { el.value = ''; return toast('Import failed: ' + e.message); }
-  el.value = '';
-  try {
-    if (D.isPack(d)) {
-      const r = await D.importPack(d);
-      window.__lastImport = r;
-      const bits = [`${r.routines} routines`, `${r.exercises} exercises`]; if (r.sessionsAdded) bits.push(`${r.sessionsAdded} past sessions`);
-      toast(r.replaced && !r.sessionsAdded && !r.setsAdded ? `${r.name} is up to date (nothing duplicated)` : `Imported ${bits.join(', ')}`);
-    } else {
-      const v = await actionSheet('Restore backup', [{ label: 'Merge with data on this phone', v: 'merge' }, { label: 'Replace everything on this phone', v: 'replace', danger: true }]);
-      if (!v) return;
-      if (v === 'replace' && !(await confirmSheet('Replace everything?', 'All data on this phone is replaced with the backup.', 'Replace', true))) return;
-      const r = await D.restoreJSON(d, v); window.__lastImport = r;
-      toast(v === 'replace' ? `Restored ${r.total} records` : `Merged: ${r.added} added, ${r.updated} updated`);
-    }
-    homePick = null; sync.soon();
-    go(fromSettings ? '#/settings' : '#/today');
-  } catch (e) { console.error(e); toast('Import failed: ' + e.message); }
-}
-on('importFile', (el) => handleImportFile(el, location.hash === '#/settings'));
 
 export function today() {
-  if (needsWelcome()) return welcome();
   const rot = D.getRotation();
   const sugg = D.nextInRotation();
   const pickId = homePick && D.routine(homePick) ? homePick : sugg || (D.allRoutines()[0] || {}).id;
   const r = D.routine(pickId);
   if (!r) {
     const html = `<div class="hdr"><div><div class="eyebrow">${esc(fmtLong(Date.now()))}</div><h1>Today</h1></div></div>
-      <div class="card hero"><div class="eyebrow">No routines yet</div><div class="sub" style="margin:6px 0 16px">Import your programmes file, or make a routine from your exercises.</div>
-      ${importBtn('Import your programmes')}<a class="btn-secondary mt8" href="#/routine-edit/new">${ic(P.plus, 18)} New routine</a></div>`;
+      <div class="card hero"><div class="eyebrow">No routines yet</div><div class="sub" style="margin:6px 0 16px">Paste your sync link in Settings: your programmes and history load automatically.</div>
+      <a class="btn-primary" href="#/settings">Settings</a><a class="btn-secondary mt8" href="#/routine-edit/new">${ic(P.plus, 18)} New routine</a></div>`;
     return { html, tab: 'Today' };
   }
   const last = D.sessions()[0];
@@ -265,7 +230,7 @@ export function exercises() {
   const html = `<div class="hdr"><div><div class="eyebrow">Library · ${all.length}</div><h1>Exercises</h1></div><a class="circbtn" href="#/exercise-edit/new" aria-label="New exercise" style="margin-bottom:3px">${ic(P.plus, 20, '#fff', 2.4)}</a></div>
     <div class="searchbox">${ic(P.search, 18, '#8e8e93')}<input type="search" placeholder="Search" data-filter="lib" value="${esc(exFilter)}" autocomplete="off"></div>${sec}
     ${(D.SEED.libraryNotes || []).map(n => `<p class="muted pad" style="font-size:12.5px;margin:14px 20px">${esc(n)}</p>`).join('')}
-    ${D.installedPacks().length ? '' : `<div class="pad mt16">${importBtn('Import your programmes', 'btn-secondary')}</div>`}`;
+`;
   return { html, tab: 'Exercises', after: () => { if (exFilter) applyFilter('lib', exFilter); } };
 }
 export function applyFilter(kind, q) {
@@ -482,13 +447,12 @@ export function settings() {
       <label class="field"><span>Apps Script web app URL</span><input class="input" type="url" id="syncUrl" value="${esc(url)}" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></label>
       <div class="btn-row"><button class="btn-secondary" data-act="saveSync">Save</button><button class="btn-primary" style="min-height:52px;font-size:17px" data-act="syncNow" ${url ? '' : 'disabled'}>Sync now</button></div>
       <div class="status-line${st.lastError && url ? ' err' : ''}">${line}</div><div class="status-line">${pend} record${pend === 1 ? '' : 's'} waiting.</div>
-      <button class="btn-secondary mt8" data-act="driveLoad" ${url ? '' : 'disabled'}>${ic(P.plus, 18)} Load my full file from Drive</button>
-      <p>Reads <b>exercise-programmes-import.json</b> from your Google Drive through the same web app and merges it (nothing is duplicated, your logs stay). Needs the updated script from SETUP.md.</p></div>
+      ${url && st.driveError ? `<div class="status-line err" id="driveErr">Couldn't load your programmes from Drive (${esc(st.driveError)}). <button class="txtbtn" data-act="driveLoad">Retry</button></div>` : url && db.kvGet('driveLoaded') ? '<div class="status-line">Programmes loaded from Drive.</div>' : ''}
+      ${url ? '<details class="mt8"><summary class="muted">Advanced</summary><button class="btn-secondary mt8" data-act="driveLoad">Reload programmes from Drive</button></details>' : ''}</div>
     <div class="section-label" id="data">Your data</div>
     <div class="setgroup"><p>Export every set and session as a CSV file (one row each), or make a full backup you can restore later.</p>
       <button class="btn-primary" data-act="exportCSV">${ic(P.share, 19, '#000', 2)} Export CSV</button>
-      <div class="btn-row mt8"><button class="btn-secondary" data-act="backupJSON">Backup (JSON)</button>${importBtn('Restore / import', 'btn-secondary')}</div>
-      <p>Restore takes a backup or a programmes file. Programmes files are merged: your logged sessions stay, and importing the same file again adds nothing twice.</p>
+      <div class="btn-row mt8"><button class="btn-secondary" data-act="backupJSON">Backup (JSON)</button></div>
       ${sampleN.sessions || sampleN.sets ? `<button class="btn-secondary danger mt8" data-act="delSample">${ic(P.trash, 18)} Delete sample history</button><p>Removes only the ${sampleN.sessions} pre-loaded sample sessions (${sampleN.sets} sets). Everything you logged yourself stays.</p>` : ''}
       <div class="status-line">${D.sessions().length} sessions · ${db.list('sets').filter(s => !s.deleted).length} sets stored on this phone. Storage ${persisted === true ? 'is persistent' : persisted === false ? 'may be cleared by Safari if unused for a long time (add to Home Screen to keep it)' : 'status unknown'}.</div></div>
     <div class="section-label">Equipment</div>
@@ -501,15 +465,15 @@ export function settings() {
     <div class="section-label">Programmes files</div>
     <div class="setgroup">${packs.length ? packs.map(pk => `<p><b>${esc(pk.name || pk.id)}</b><br>${(pk.content?.routines || []).length} routines · ${(pk.content?.exercises || []).length} exercises${pk.history?.count ? ` · ${pk.history.count} history entries` : ''} · imported ${esc(fmtDate(pk.importedAt))}</p>
       ${(pk.history?.skipped || []).length ? `<details class="skipped"><summary>${pk.history.skipped.length} history entries were skipped (ambiguous)</summary><ul class="bul sm">${pk.history.skipped.map(x => `<li><b>${esc(x.exercise)}</b> · ${esc(x.when)}: “${esc(x.written)}”<small>${esc(x.why)}</small></li>`).join('')}</ul></details>` : ''}`).join('')
-      : `<p>${preloaded() ? 'None imported. The built-in programmes are already loaded; import your own programmes file to add or update content.' : 'None imported. The app has a few basic exercises; import a programmes file to add routines, cue sheets and video links.'}</p>`}
-      ${importBtn('Import programmes file', 'btn-secondary')}</div>
+      : `<p>${preloaded() ? 'None imported. The built-in programmes are already loaded; paste your sync link above to load your own programmes.' : 'None imported. The app has a few basic exercises; paste your sync link above to load your routines, cue sheets and video links.'}</p>`}
+</div>
     <div class="section-label">About</div>
     <div class="setgroup"><p>Offline-first: data lives in this phone's storage (IndexedDB). Beeps play at 10 s left and at 0 while the app is open; iPhone can't beep while locked. The screen stays awake while a timer runs.</p>
       ${db.kvGet('historyImported') ? '<p>Built-in history imported (see SKIPPED_HISTORY.md for the ambiguous ones that were left out).</p>' : ''}
       <button class="btn-secondary danger" data-act="wipeAll">Erase all data on this phone</button></div>`;
   return { html, tab: 'Settings' };
 }
-on('saveSync', async () => { const u = document.getElementById('syncUrl').value.trim(); if (u && !/^https:\/\//.test(u)) return toast('The URL should start with https://'); await sync.setUrl(u); toast(u ? 'Sync URL saved' : 'Sync turned off'); if (u) sync.soon(300); go(location.hash); });
+on('saveSync', async () => { const u = document.getElementById('syncUrl').value.trim(); if (u && !/^(https:\/\/|http:\/\/(127\.0\.0\.1|localhost)[:/])/.test(u)) return toast('The URL should start with https://'); await sync.setUrl(u); toast(u ? 'Sync URL saved' : 'Sync turned off'); if (u) sync.soon(300); go(location.hash); });
 on('syncNow', async () => { toast('Syncing…'); const r = await sync.syncNow(); toast(r.ok ? `Synced ${r.total} record${r.total === 1 ? '' : 's'}` : r.offline ? 'Offline – will retry' : r.error ? 'Sync failed: ' + r.error : 'Nothing to sync'); go(location.hash); });
 on('saveEquip', () => {
   const kb = document.getElementById('kbList').value.split(',').map(x => num(x)).filter(x => x > 0).sort((a, b) => a - b);
@@ -524,7 +488,7 @@ on('delSample', async () => {
 on('driveLoad', async (el) => {
   el.disabled = true; toast('Loading from Drive…');
   try {
-    const r = await sync.loadFromDrive(); window.__lastImport = r; homePick = null;
+    const r = await sync.autoLoad(true); if (r.error) throw new Error(r.error); window.__lastImport = r; homePick = null; sync.soon(300);
     const bits = [`${r.routines} routines`, `${r.exercises} exercises`]; if (r.sessionsAdded) bits.push(`${r.sessionsAdded} past sessions`);
     toast(r.replaced && !r.sessionsAdded && !r.setsAdded ? `${r.name} is up to date (nothing duplicated)` : `Loaded from Drive: ${bits.join(', ')}`);
   } catch (e) { window.__lastImport = { error: e.message }; toast('Drive load failed: ' + e.message); }
