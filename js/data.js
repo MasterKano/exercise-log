@@ -127,8 +127,23 @@ export function routineMeta(r) {
 }
 export const getRotation = () => (db.kvGet('rotation', null) || SEED.rotation || []).filter(id => routine(id));
 export const setRotation = (ids) => db.kvSet('rotation', ids);
+// Active routines (stored per device in kv 'routineActive' = { id: true|false } overrides; kv is not part of Sheet sync).
+// Default when not set: logged in the last 30 days, in the rotation, or in the programme of the latest session; if that gives none, all.
+function defaultActiveSet() {
+  const cut = Date.now() - 30 * 864e5; const ss = sessions(); const s = new Set();
+  for (const x of ss) if (x.startedAt >= cut && x.routineId) s.add(x.routineId);
+  for (const id of (db.kvGet('rotation', null) || SEED.rotation || [])) s.add(id);
+  const lr = ss[0] && routine(ss[0].routineId); if (lr && lr.kind === 'program') for (const d of programme(lr.programme)?.days || []) s.add(d);
+  return s;
+}
+export function isActive(id) {
+  const o = (db.kvGet('routineActive', {}) || {})[id]; if (o != null) return !!o;
+  const s = defaultActiveSet(); return !s.size || s.has(id);
+}
+export function setActive(id, on) { const m = { ...(db.kvGet('routineActive', {}) || {}) }; m[id] = !!on; return db.kvSet('routineActive', m); }
+// Next workout: the routine after the last one done in the rotation, skipping inactive ones.
 export function nextInRotation() {
-  const rot = getRotation(); if (!rot.length) return null;
+  const rot = getRotation().filter(isActive); if (!rot.length) return null;
   const last = sessions().find(s => rot.includes(s.routineId));
   if (!last) return rot[0];
   return rot[(rot.indexOf(last.routineId) + 1) % rot.length];

@@ -59,7 +59,7 @@ export function today() {
     const w = D.progWeek(r.programme);
     hero += `<div class="rounds"><div class="lbl">Programme week<small>targets follow S1–S4</small></div><div class="seg sm num">${[1, 2, 3, 4].map(n => `<button class="${n === w ? 'on' : ''}" data-act="setWeek" data-p="${r.programme}" data-n="${n}">S${n}</button>`).join('')}</div></div>`;
   } else hero += `<div style="height:16px"></div>`;
-  hero += `<button class="btn-primary" data-act="startPicked" data-r="${r.id}">${ic(P.play, 18, 'none', 0, '#000')}Start</button>`;
+  hero += pickId === sugg ? `<button class="btn-primary startnext" data-act="startPicked" data-r="${r.id}" style="min-height:60px;font-size:19px">${ic(P.play, 20, 'none', 0, '#000')}Start next: ${esc(r.name)}</button>` : `<button class="btn-primary" data-act="startPicked" data-r="${r.id}">${ic(P.play, 18, 'none', 0, '#000')}Start</button>`;
   if (r.kind === 'followalong') hero += `<a class="btn-secondary mt8" href="#/series/${r.series}">Choose another session</a>`;
 
   const st = sync.status(); const pend = sync.pending();
@@ -70,7 +70,7 @@ export function today() {
   else syncLine = `${ic(P.circleCheck, 15, '#8e8e93', 2)}Synced to Google Sheet${st.lastOk ? ' · ' + ago(st.lastOk) : ''}`;
 
   const sm = D.weeklySummary();
-  const others = [...new Set([...rot, ...D.allRoutines().filter(x => x.kind === 'followalong' || x.kind === 'intervals').map(x => x.id)])].filter(id => id !== r.id).map(id => D.routine(id)).filter(Boolean);
+  const others = [...new Set([...rot, ...D.allRoutines().filter(x => x.kind === 'followalong' || x.kind === 'intervals').map(x => x.id)])].filter(id => id !== r.id && D.isActive(id)).map(id => D.routine(id)).filter(Boolean);
   if (pickId !== sugg && sugg && !others.find(o => o.id === sugg)) others.unshift(D.routine(sugg));
   const rows = others.map(o => { const ls = D.lastSessionOf(o.id); return `<button class="row" data-act="homePick" data-r="${o.id}"><div class="badge num${badgeFor(o).length > 2 ? ' sm' : ''}">${esc(badgeFor(o))}</div><div class="t"><b>${esc(o.name)}</b><span>${esc(D.routineMeta(o))}</span></div>
     <div class="when">${ls ? fmtShort(ls.startedAt) : ''}</div>${ic(P.chevR, 16, '#5a5a5e', 2.4)}</button>`; }).join('');
@@ -91,8 +91,9 @@ on('setWeek', (el) => { D.setProgWeek(el.dataset.p, +el.dataset.n); go(location.
 on('startPicked', (el) => { const r = D.routine(el.dataset.r); W.startRoutine(r.id, { rounds: homeRounds[r.id] }); });
 
 // ---------------------------------------------------------------- ROUTINES
+let showInactive = false;
 export function routines() {
-  const all = D.allRoutines(); const rot = D.getRotation();
+  const every = D.allRoutines(); const all = every.filter(r => D.isActive(r.id)); const inactive = every.filter(r => !D.isActive(r.id)); const rot = D.getRotation().filter(D.isActive);
   const row = (r, extra = '') => { const ls = D.lastSessionOf(r.id); return `<a class="row" href="#/routine/${encodeURIComponent(r.id)}"><div class="badge num${badgeFor(r).length > 2 ? ' sm' : ''}">${esc(badgeFor(r))}</div><div class="t"><b>${esc(r.name)}</b><span>${esc(D.routineMeta(r))}</span></div>${extra}<div class="when">${ls ? fmtShort(ls.startedAt) : ''}</div>${ic(P.chevR, 16, '#5a5a5e', 2.4)}</a>`; };
   const sec = (title, list, right = '') => list.length ? `<div class="section-label">${esc(title)}${right}</div><div class="card list" style="border-radius:16px">${list.map(r => row(r)).join('')}</div>` : '';
   const rotList = rot.map(id => D.routine(id)).filter(Boolean);
@@ -104,15 +105,17 @@ export function routines() {
   }
   const builtIn = [...bySrc].map(([t, l]) => sec(t, l)).join('');
   const mine = all.filter(r => !D.isSeedRoutine(r.id));
-  const progs = D.allProgrammes().map(p => sec(`${p.name} · week ${D.progWeek(p.id)}`, p.days.map(id => D.routine(id)).filter(Boolean), `<button data-act="progWeekSheet" data-p="${p.id}">Change week</button>`)).join('');
+  const progs = D.allProgrammes().map(p => sec(`${p.name} · week ${D.progWeek(p.id)}`, p.days.map(id => D.routine(id)).filter(r => r && D.isActive(r.id)), `<button data-act="progWeekSheet" data-p="${p.id}">Change week</button>`)).join('');
   const html = `<div class="hdr"><div><div class="eyebrow">Plans</div><h1>Routines</h1></div><a class="circbtn" href="#/routine-edit/new" aria-label="New routine" style="margin-bottom:3px">${ic(P.plus, 20, '#fff', 2.4)}</a></div>
     <div class="section-label">Rotation<button data-act="editRotation">Edit</button></div>
     <div class="card list" style="border-radius:16px">${rotList.map(r => row(r)).join('') || '<div class="empty" style="padding:20px">No routines in rotation</div>'}</div>
     ${builtIn}${progs}
     ${sec('My routines', mine)}
+    ${inactive.length ? (showInactive ? sec(`Inactive · ${inactive.length}`, inactive, '<button data-act="toggleInactive">Hide</button>') : `<div class="pad mt16"><button class="txtbtn" data-act="toggleInactive" id="showInactive">Show all (${inactive.length} inactive)</button></div>`) : ''}
     <div class="pad mt16"><a class="btn-secondary" href="#/routine-edit/new">${ic(P.plus, 18)} New routine</a></div>`;
   return { html, tab: 'Routines' };
 }
+on('toggleInactive', () => { showInactive = !showInactive; go('#/routines'); });
 on('progWeekSheet', async (el) => {
   const p = D.programme(el.dataset.p); const cur = D.progWeek(p.id);
   const v = await actionSheet(`${p.name}: week`, [1, 2, 3, 4].map(w => ({ label: `Week ${w} (S${w})${w === cur ? '  ✓' : ''}`, v: String(w) })));
@@ -164,11 +167,12 @@ export function routineDetail(id) {
     <div class="ttl"><div class="eyebrow">${esc(r.source || 'My routine')}</div><h1>${esc(r.name)}</h1><div class="tags"><span class="tag">${esc(r.subtitle || r.kind)}</span>${r.week ? '' : ''}</div></div>
     <div class="pad" style="margin:8px 0 14px"><button class="btn-primary" data-act="startPicked" data-r="${r.id}">${ic(P.play, 18, 'none', 0, '#000')}Start</button></div>
     ${body}
-    <div class="card list nobadge" style="margin-top:14px"><label class="row chk" style="padding:0 16px"><span class="t"><b style="font-size:16px">In rotation</b></span><input type="checkbox" data-act="toggleRot" data-id="${r.id}" ${inRot ? 'checked' : ''}></label></div>
+    <div class="card list nobadge" style="margin-top:14px"><label class="row chk" style="padding:0 16px"><span class="t"><b style="font-size:16px">Active</b><span>Inactive routines are hidden from Routines and Today</span></span><input type="checkbox" data-act="toggleActive" data-id="${r.id}" ${D.isActive(r.id) ? 'checked' : ''}></label><label class="row chk" style="padding:0 16px"><span class="t"><b style="font-size:16px">In rotation</b></span><input type="checkbox" data-act="toggleRot" data-id="${r.id}" ${inRot ? 'checked' : ''}></label></div>
     ${!D.isSeedRoutine(r.id) ? `<div class="pad mt16"><button class="btn-secondary danger" data-act="delRoutine" data-id="${r.id}">${ic(P.trash, 18)} Delete routine</button></div>` : ''}`;
   return { html, tab: 'Routines' };
 }
 on('cueEx', (el) => W.cueSheet(el.dataset.id));
+on('toggleActive', (el) => { D.setActive(el.dataset.id, el.checked); toast(el.checked ? 'Active' : 'Inactive: hidden from the main list'); });
 on('toggleRot', (el) => { const id = el.dataset.id; const rot = D.getRotation(); D.setRotation(el.checked ? [...rot, id] : rot.filter(x => x !== id)); toast(el.checked ? 'Added to rotation' : 'Removed from rotation'); });
 on('delRoutine', async (el) => { if (!(await confirmSheet('Delete routine?', 'Past sessions stay in your history.', 'Delete', true))) return; const r = D.routine(el.dataset.id); db.del('routines', r.id); D.setRotation(D.getRotation().filter(x => x !== r.id)); go('#/routines'); });
 
