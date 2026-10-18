@@ -36,7 +36,7 @@ window.addEventListener('hashchange', () => { if (sheetOpen()) closeAllSheets();
 
 document.addEventListener('click', (ev) => {
   const el = ev.target.closest('[data-act]'); if (!el) return;
-  if (el.tagName === 'INPUT') return; // handled on change
+  if (el.tagName === 'INPUT' || el.tagName === 'SELECT') return; // handled on change
   const fn = actions[el.dataset.act]; if (!fn) return;
   if (el.tagName === 'BUTTON') ev.preventDefault();
   try { fn(el, ev); } catch (e) { console.error(e); toast('Something went wrong: ' + e.message); }
@@ -56,7 +56,7 @@ document.addEventListener('change', (ev) => {
   const el = ev.target; const d = el.dataset;
   if (d.re != null && (el.type === 'checkbox' || el.tagName === 'SELECT')) return Pg.onRoutineEditInput(el);
   if (d.ee != null && (el.type === 'checkbox' || el.tagName === 'SELECT')) return Pg.onExEditInput(el);
-  if (el.tagName === 'INPUT' && d.act && actions[d.act]) actions[d.act](el, ev);
+  if ((el.tagName === 'INPUT' || el.tagName === 'SELECT') && d.act && actions[d.act]) actions[d.act](el, ev);
 });
 // Enter/Done on number inputs closes the keyboard
 document.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && ev.target.matches('.f input')) ev.target.blur(); });

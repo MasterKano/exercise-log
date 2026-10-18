@@ -462,3 +462,6 @@ button.f{color:#fff}
 .notice p{font-size:14px;line-height:19px;color:var(--t2);margin:6px 0 12px}
 .notice p b{font-size:14px;color:#fff}
 .notice .btn-secondary{min-height:44px}
+.chart{padding:12px 14px 8px;margin-bottom:10px}.chart .chh{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;font-size:15px}.chart .chh span{color:#8e8e93;font-size:13px}.chart svg{display:block}
+details.advanced>summary{cursor:pointer;list-style:none}details.advanced>summary::-webkit-details-marker{display:none}details.advanced>summary::after{content:' ›';color:#8e8e93}details.advanced[open]>summary::after{content:' ⌄'}
+.advh{font-size:15px;margin:18px 0 6px;color:#fff}.advh:first-child{margin-top:4px}

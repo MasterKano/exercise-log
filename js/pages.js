@@ -24,9 +24,23 @@ function preloadNotice() {
   const n = D.sampleHistoryCount();
   return `<div class="card notice" id="preloadNotice"><b>Everything is pre-loaded</b>
     <p>Routines, programme weeks with targets, warm-ups, follow-along sessions and video links are ready to use${n.sessions ? `, plus a sample history (${n.sessions} past sessions)` : ''}.
-    ${n.sessions ? 'To remove the sample history, go to Settings → Your data → <b>Delete sample history</b>. Your own logs are never touched.' : ''}</p>
+    ${n.sessions ? 'To remove the sample history, go to Settings → Advanced → <b>Delete sample history</b>. Your own logs are never touched.' : ''}</p>
     <div class="btn-row"><button class="btn-secondary" data-act="dismissPreload">Got it</button>${n.sessions ? '<a class="btn-secondary" href="#/settings">Settings</a>' : ''}</div></div>`;
 }
+// In-app training reminder (no push: iOS web push needs a push server). kv remindDays: number, 0 = off; default 3.
+export const remindDays = () => { const v = db.kvGet('remindDays', null); return v == null ? 3 : +v; };
+function reminderBanner(nextId) {
+  const n = remindDays(); if (!n) return '';
+  const last = D.sessions().find(s => !String(s.id).startsWith('imp-')); if (!last) return '';
+  const days = Math.floor((Date.now() - (last.endedAt || last.startedAt)) / 864e5); if (days < n) return '';
+  const today = new Date().toDateString(); if (db.kvGet('remindDismissed') === today) return '';
+  const r = nextId && D.routine(nextId);
+  return `<div class="card notice" id="remindBanner"><b>${days} days since your last session</b><p>Last: ${esc(last.routineName || 'session')}, ${esc(fmtDate(last.startedAt))}.</p>
+    ${r ? `<button class="btn-primary" data-act="startPicked" data-r="${r.id}">${ic(P.play, 18, 'none', 0, '#000')}Start next: ${esc(r.name)}</button>` : ''}
+    <div class="btn-row mt8"><button class="btn-secondary" data-act="dismissRemind">Not today</button></div></div>`;
+}
+on('dismissRemind', () => { db.kvSet('remindDismissed', new Date().toDateString()); go('#/today'); });
+on('saveRemind', (el) => { const v = el.value === 'off' ? 0 : +el.value; db.kvSet('remindDays', v); toast(v ? `Reminder after ${v} days without training` : 'Reminder off'); });
 on('dismissPreload', () => { db.kvSet('preloadNoticeDismissed', Date.now()); db.kvSet('onboarded', db.kvGet('onboarded') || Date.now()); go('#/today'); });
 
 export function today() {
@@ -77,7 +91,7 @@ export function today() {
   const active = W.A ? `<a class="card resume" href="#/workout">${ic(P.timer, 22, A_COLOR, 2)}<b>${esc(W.A.title)} in progress<span>Started ${fmtTime(W.A.startedAt)} · tap to resume</span></b>${ic(P.chevR, 16, '#8e8e93', 2.4)}</a>` : '';
   const html = `<div class="hdr"><div><div class="eyebrow">${esc(fmtLong(Date.now()))}</div><h1>Today</h1></div>
       <button class="circbtn" style="margin-bottom:3px" data-act="exportCSV" aria-label="Export CSV">${ic(P.share, 19, '#fff', 2)}</button></div>
-    ${preloadNotice()}${active}<div class="card hero">${hero}</div>
+    ${preloadNotice()}${active}${W.A ? '' : reminderBanner(sugg)}<div class="card hero">${hero}</div>
     <div class="sync">${syncLine}</div>
     <div class="section-label">This week<a href="#/history">History</a></div>
     <div class="card summary num"><div><b>${sm.sessions}</b><span>sessions</span></div><div><b>${Math.round(sm.totalSec / 60)}</b><span>minutes</span></div><div><b>${sm.bests}</b><span>new bests</span></div><div><b>${sm.streak}</b><span>wk streak</span></div></div>
@@ -257,6 +271,31 @@ function setRowHTML(st, label, ex) {
   const right = st.rir != null ? `RIR <b>${fmtNum(st.rir)}</b>` : st.rpe != null ? `RPE <b>${fmtNum(st.rpe)}</b>` : '';
   return `<button class="sr num" data-act="editSet" data-id="${esc(st.id)}"><div class="rn">${esc(label)}</div><div class="v">${v.join('') || '<span>–</span>'}</div><div class="rir">${right}</div></button>`;
 }
+// Progress charts (inline SVG): best weight per session, else best reps, else longest time; RPE trend for stairs / 4x4.
+function lineChart(pts, label, fmt) {
+  if (pts.length < 2) return '';
+  const W0 = 340, H0 = 124, px = 48, pr = 14, py = 16; const xs = pts.map(p => p.t), ys = pts.map(p => p.v);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const X = (t) => px + (x1 === x0 ? (W0 - px - pr) / 2 : (t - x0) / (x1 - x0) * (W0 - px - pr)), Y = (v) => H0 - py - (y1 === y0 ? (H0 - 2 * py) / 2 : (v - y0) / (y1 - y0) * (H0 - 2 * py));
+  const d = pts.map(p => `${X(p.t).toFixed(1)},${Y(p.v).toFixed(1)}`).join(' ');
+  const last = pts[pts.length - 1];
+  return `<div class="card chart" data-chart="${esc(label)}"><div class="chh"><b>${esc(label)}</b><span>${esc(fmt(last.v))} · ${pts.length} sessions</span></div>
+    <svg viewBox="0 0 ${W0} ${H0}" width="100%" role="img" aria-label="${esc(label)} over time"><line x1="${px}" x2="${W0 - pr}" y1="${H0 - py}" y2="${H0 - py}" stroke="#262628"/>
+    <text x="2" y="${Y(y1) + 4}" fill="#8e8e93" font-size="10">${esc(fmt(y1))}</text>${y1 !== y0 ? `<text x="2" y="${Y(y0) + 4}" fill="#8e8e93" font-size="10">${esc(fmt(y0))}</text>` : ''}
+    <polyline points="${d}" fill="none" stroke="#22D3EE" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>${pts.map(p => `<circle cx="${X(p.t).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="3.2" fill="#22D3EE"/>`).join('')}
+    <text x="${px}" y="${H0 - 1}" fill="#8e8e93" font-size="10">${esc(fmtShort(x0))}</text><text x="${W0 - pr}" y="${H0 - 1}" fill="#8e8e93" font-size="10" text-anchor="end">${esc(fmtShort(x1))}</text></svg></div>`;
+}
+function progressCharts(ex, h) {
+  const asc = h.slice().reverse(); const best = (x, k) => Math.max(...x.sets.map(s => s[k] ?? -Infinity));
+  const k = asc.some(x => best(x, 'weight') > 0) ? 'weight' : asc.some(x => best(x, 'reps') > 0) ? 'reps' : asc.some(x => best(x, 'timeSec') > 0) ? 'timeSec' : null;
+  let out = '';
+  if (k) out += lineChart(asc.filter(x => best(x, k) > 0).map(x => ({ t: x.session.startedAt, v: best(x, k) })), k === 'weight' ? 'Best weight' : k === 'reps' ? 'Best reps' : 'Longest time', (v) => k === 'weight' ? fmtNum(v) + ' kg' : k === 'reps' ? fmtNum(v) + ' reps' : fmtClock(v));
+  if (ex.id === 'stair-climb' || ex.id === 'norwegian-4x4') {
+    const pts = asc.map(x => { const r = x.sets.map(s => s.rpe).filter(v => v != null); return r.length ? { t: x.session.startedAt, v: Math.round(r.reduce((a, b) => a + b, 0) / r.length * 10) / 10 } : null; }).filter(Boolean);
+    out += lineChart(pts, 'RPE trend', (v) => 'RPE ' + fmtNum(v));
+  }
+  return out ? `<div class="section-label">Progress</div>${out}` : '';
+}
 export function exerciseHist(id) {
   const ex = D.exercise(id);
   if (!ex) return { html: `<div class="nav">${back('Exercises', '#/exercises')}</div><div class="empty">Exercise not found.</div>`, tab: 'Exercises' };
@@ -275,6 +314,7 @@ export function exerciseHist(id) {
   const html = `<div class="nav">${back('Exercises', '#/exercises')}<div class="right"><button class="circbtn" data-act="exHistMenu" data-id="${esc(id)}" aria-label="More options">${ic(P.dots, 18, 'none', 0, '#fff')}</button></div></div>
     <div class="ttl"><h1>${esc(ex.name)}</h1><div class="tags">${tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}</div></div>
     <div class="pad" style="margin:10px 0 4px"><button class="btn-secondary" data-act="cueEx" data-id="${esc(id)}">${ic(P.info, 18)} Cues, notes & video</button></div>
+    ${progressCharts(ex, h)}
     <div class="section-label">Sessions · newest first</div>${cards || '<div class="empty">No sets logged yet.</div>'}`;
   return { html, tab: 'Exercises' };
 }
@@ -440,6 +480,7 @@ on('delSession', async (el) => { if (!(await confirmSheet('Delete session?', 'Th
 export function onSessNotes(el) { const s = db.get('sessions', el.dataset.sessnotes); if (s) { D.saveSession({ ...s, notes: el.value }); sync.soon(5000); } }
 
 // ---------------------------------------------------------------- SETTINGS
+let advOpen = false; document.addEventListener('toggle', (e) => { if (e.target.id === 'advanced') advOpen = e.target.open; }, true);
 export function settings() {
   const st = sync.status(); const url = sync.getUrl(); const pend = sync.pending();
   const eq = D.equipment();
@@ -452,13 +493,10 @@ export function settings() {
       <div class="btn-row"><button class="btn-secondary" data-act="saveSync">Save</button><button class="btn-primary" style="min-height:52px;font-size:17px" data-act="syncNow" ${url ? '' : 'disabled'}>Sync now</button></div>
       <div class="status-line${st.lastError && url ? ' err' : ''}">${line}</div><div class="status-line">${pend} record${pend === 1 ? '' : 's'} waiting.</div>
       ${url && st.driveError ? `<div class="status-line err" id="driveErr">Couldn't load your programmes from Drive (${esc(st.driveError)}). <button class="txtbtn" data-act="driveLoad">Retry</button></div>` : url && db.kvGet('driveLoaded') ? '<div class="status-line">Programmes loaded from Drive.</div>' : ''}
-      ${url ? '<details class="mt8"><summary class="muted">Advanced</summary><button class="btn-secondary mt8" data-act="driveLoad">Reload programmes from Drive</button></details>' : ''}</div>
-    <div class="section-label" id="data">Your data</div>
-    <div class="setgroup"><p>Export every set and session as a CSV file (one row each), or make a full backup you can restore later.</p>
-      <button class="btn-primary" data-act="exportCSV">${ic(P.share, 19, '#000', 2)} Export CSV</button>
-      <div class="btn-row mt8"><button class="btn-secondary" data-act="backupJSON">Backup (JSON)</button></div>
-      ${sampleN.sessions || sampleN.sets ? `<button class="btn-secondary danger mt8" data-act="delSample">${ic(P.trash, 18)} Delete sample history</button><p>Removes only the ${sampleN.sessions} pre-loaded sample sessions (${sampleN.sets} sets). Everything you logged yourself stays.</p>` : ''}
-      <div class="status-line">${D.sessions().length} sessions · ${db.list('sets').filter(s => !s.deleted).length} sets stored on this phone. Storage ${persisted === true ? 'is persistent' : persisted === false ? 'may be cleared by Safari if unused for a long time (add to Home Screen to keep it)' : 'status unknown'}.</div></div>
+</div>
+    <div class="section-label">Reminder</div>
+    <div class="setgroup"><label class="field"><span>Remind me after … days without training</span><select class="input" id="remindDays" data-act="saveRemind">${['off', 1, 2, 3, 4, 5, 7, 10, 14].map(v => `<option value="${v}" ${(v === 'off' ? 0 : v) === remindDays() ? 'selected' : ''}>${v === 'off' ? 'Off' : v + ' day' + (v === 1 ? '' : 's')}</option>`).join('')}</select></label>
+      <p>Shown as a banner on Today when you open the app (iPhone can't schedule notifications for a web app without a push server).</p></div>
     <div class="section-label">Equipment</div>
     <div class="setgroup"><label class="field"><span>Kettlebells (kg, comma separated)</span><input class="input num" id="kbList" value="${eq.kb.join(', ')}"></label>
       <div style="display:flex;gap:10px"><label class="field" style="flex:1"><span>DB step</span><input class="input num" id="dbStep" value="${eq.dbStep}"></label><label class="field" style="flex:1"><span>BB step</span><input class="input num" id="bbStep" value="${eq.bbStep}"></label><label class="field" style="flex:1"><span>Machine step</span><input class="input num" id="machineStep" value="${eq.machineStep}"></label></div>
@@ -466,15 +504,19 @@ export function settings() {
     ${D.allProgrammes().length ? `<div class="section-label">Programme weeks</div>
     <div class="setgroup">${D.allProgrammes().map(p => `<div style="display:flex;align-items:center;justify-content:space-between;margin:10px 0"><span>${esc(p.name)}</span><div class="seg sm num">${[1, 2, 3, 4].map(n => `<button class="${n === D.progWeek(p.id) ? 'on' : ''}" data-act="setWeek" data-p="${p.id}" data-n="${n}">S${n}</button>`).join('')}</div></div>`).join('')}
       <p>The week moves on by itself once all three training days are logged for the current week.</p></div>` : ''}
-    <div class="section-label">Programmes files</div>
-    <div class="setgroup">${packs.length ? packs.map(pk => `<p><b>${esc(pk.name || pk.id)}</b><br>${(pk.content?.routines || []).length} routines · ${(pk.content?.exercises || []).length} exercises${pk.history?.count ? ` · ${pk.history.count} history entries` : ''} · imported ${esc(fmtDate(pk.importedAt))}</p>
+    <details class="advanced" id="advanced" ${advOpen ? 'open' : ''}><summary class="section-label">Advanced</summary><div class="setgroup">
+      ${url ? '<button class="btn-secondary" data-act="driveLoad">Reload programmes from Drive</button>' : ''}
+      <h3 class="advh" id="data">Your data</h3><p>Export every set and session as a CSV file (one row each), or make a full backup you can restore later.</p>
+      <button class="btn-secondary" data-act="exportCSV">${ic(P.share, 19, '#fff', 2)} Export CSV</button>
+      <div class="btn-row mt8"><button class="btn-secondary" data-act="backupJSON">Backup (JSON)</button></div>
+      ${sampleN.sessions || sampleN.sets ? `<button class="btn-secondary danger mt8" data-act="delSample">${ic(P.trash, 18)} Delete sample history</button><p>Removes only the ${sampleN.sessions} pre-loaded sample sessions (${sampleN.sets} sets). Everything you logged yourself stays.</p>` : ''}
+      <div class="status-line">${D.sessions().length} sessions · ${db.list('sets').filter(s => !s.deleted).length} sets stored on this phone. Storage ${persisted === true ? 'is persistent' : persisted === false ? 'may be cleared by Safari if unused for a long time (add to Home Screen to keep it)' : 'status unknown'}.</div>
+      <h3 class="advh">Programmes files</h3>${packs.length ? packs.map(pk => `<p><b>${esc(pk.name || pk.id)}</b><br>${(pk.content?.routines || []).length} routines · ${(pk.content?.exercises || []).length} exercises${pk.history?.count ? ` · ${pk.history.count} history entries` : ''} · imported ${esc(fmtDate(pk.importedAt))}</p>
       ${(pk.history?.skipped || []).length ? `<details class="skipped"><summary>${pk.history.skipped.length} history entries were skipped (ambiguous)</summary><ul class="bul sm">${pk.history.skipped.map(x => `<li><b>${esc(x.exercise)}</b> · ${esc(x.when)}: “${esc(x.written)}”<small>${esc(x.why)}</small></li>`).join('')}</ul></details>` : ''}`).join('')
       : `<p>${preloaded() ? 'None imported. The built-in programmes are already loaded; paste your sync link above to load your own programmes.' : 'None imported. The app has a few basic exercises; paste your sync link above to load your routines, cue sheets and video links.'}</p>`}
-</div>
-    <div class="section-label">About</div>
-    <div class="setgroup"><p>Offline-first: data lives in this phone's storage (IndexedDB). Beeps play at 10 s left and at 0 while the app is open; iPhone can't beep while locked. The screen stays awake while a timer runs.</p>
+      <h3 class="advh">About</h3><p>Offline-first: data lives in this phone's storage (IndexedDB). Beeps play at 10 s left and at 0 while the app is open; iPhone can't beep while locked. The screen stays awake while a timer runs.</p>
       ${db.kvGet('historyImported') ? '<p>Built-in history imported (see SKIPPED_HISTORY.md for the ambiguous ones that were left out).</p>' : ''}
-      <button class="btn-secondary danger" data-act="wipeAll">Erase all data on this phone</button></div>`;
+      <button class="btn-secondary danger" data-act="wipeAll">Erase all data on this phone</button></div></details>`;
   return { html, tab: 'Settings' };
 }
 on('saveSync', async () => { const u = document.getElementById('syncUrl').value.trim(); if (u && !/^(https:\/\/|http:\/\/(127\.0\.0\.1|localhost)[:/])/.test(u)) return toast('The URL should start with https://'); await sync.setUrl(u); toast(u ? 'Sync URL saved' : 'Sync turned off'); if (u) sync.soon(300); go(location.hash); });
