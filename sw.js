@@ -1,5 +1,5 @@
 // Offline service worker: precache the app shell, serve cache-first, fall back to index.html for navigations.
-const VERSION = 'exlog-pub-41c8f3456d'; // stamped by tools/build.py (hash of the app files)
+const VERSION = 'exlog-pub-15eec08dff'; // stamped by tools/build.py (hash of the app files)
 const SHELL = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
   './js/app.js', './js/db.js', './js/data.js', './js/util.js', './js/ui.js', './js/timers.js', './js/sync.js', './js/workout.js', './js/wheel.js', './js/starters.js', './js/pages.js',

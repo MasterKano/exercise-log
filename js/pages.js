@@ -40,7 +40,7 @@ function reminderBanner(nextId) {
     <div class="btn-row mt8"><button class="btn-secondary" data-act="dismissRemind">Not today</button></div></div>`;
 }
 on('dismissRemind', () => { db.kvSet('remindDismissed', new Date().toDateString()); go('#/today'); });
-on('saveRemind', (el) => { const v = el.value === 'off' ? 0 : +el.value; db.kvSet('remindDays', v); toast(v ? `Reminder after ${v} days without training` : 'Reminder off'); });
+on('saveRemind', (el) => { const v = el.value === 'off' ? 0 : +el.value; D.setSetting('remindDays', v); toast(v ? `Reminder after ${v} days without training` : 'Reminder off'); });
 on('dismissPreload', () => { db.kvSet('preloadNoticeDismissed', Date.now()); db.kvSet('onboarded', db.kvGet('onboarded') || Date.now()); go('#/today'); });
 
 export function today() {
@@ -82,7 +82,7 @@ export function today() {
   if (!sync.getUrl()) syncLine = `${ic(P.cloud, 15, '#8e8e93', 2)}<a href="#/settings">Saved on this phone · Google Sheet sync is off</a>`;
   else if (st.lastError && pend) syncLine = `${ic(P.cloud, 15, '#ff9f0a', 2)}${pend} waiting to sync · ${esc(st.lastError)}`;
   else if (pend) syncLine = `${ic(P.cloud, 15, '#8e8e93', 2)}${pend} record${pend === 1 ? '' : 's'} waiting to sync`;
-  else syncLine = `${ic(P.circleCheck, 15, '#8e8e93', 2)}Synced to Google Sheet${st.lastOk ? ' · ' + ago(st.lastOk) : ''}`;
+  else syncLine = `${ic(P.circleCheck, 15, '#8e8e93', 2)}Synced to Google Sheet${st.lastOk ? ' · ' + fmtTime(st.lastOk) : ''}`;
 
   const sm = D.weeklySummary();
   const others = [...new Set([...rot, ...D.allRoutines().filter(x => x.kind === 'followalong' || x.kind === 'intervals').map(x => x.id)])].filter(id => id !== r.id && D.isActive(id)).map(id => D.routine(id)).filter(Boolean);
@@ -188,9 +188,9 @@ export function routineDetail(id) {
   return { html, tab: 'Routines' };
 }
 on('cueEx', (el) => W.cueSheet(el.dataset.id));
-on('toggleActive', (el) => { D.setActive(el.dataset.id, el.checked); toast(el.checked ? 'Active' : 'Inactive: hidden from the main list'); });
+on('toggleActive', (el) => { D.setActive(el.dataset.id, el.checked); sync.markRoutineDirty(el.dataset.id); toast(el.checked ? 'Active' : 'Inactive: hidden from the main list'); });
 on('toggleRot', (el) => { const id = el.dataset.id; const rot = D.getRotation(); D.setRotation(el.checked ? [...rot, id] : rot.filter(x => x !== id)); toast(el.checked ? 'Added to rotation' : 'Removed from rotation'); });
-on('delRoutine', async (el) => { if (!(await confirmSheet('Delete routine?', 'Past sessions stay in your history.', 'Delete', true))) return; const r = D.routine(el.dataset.id); db.del('routines', r.id); D.setRotation(D.getRotation().filter(x => x !== r.id)); go('#/routines'); });
+on('delRoutine', async (el) => { if (!(await confirmSheet('Delete routine?', 'Past sessions stay in your history.', 'Delete', true))) return; const r = D.routine(el.dataset.id); D.deleteRoutine(r.id); D.setRotation(D.getRotation().filter(x => x !== r.id)); go('#/routines'); });
 
 // ---------------------------------------------------------------- ROUTINE EDITOR
 let rEdit = null;
@@ -230,7 +230,7 @@ on('reMove', (el) => { const a = rEdit.items; const i = +el.dataset.i, j = i + +
 on('reDel', (el) => { rEdit.items.splice(+el.dataset.i, 1); go(location.hash); });
 on('reAdd', async () => { const id = await W.pickOrCreate('Add to routine'); if (!id) return; const ex = D.exercise(id); rEdit.items.push({ ex: id, sets: 3, reps: '', rest: ex.rest || null, eachSide: ex.eachSide }); go(location.hash); });
 on('reCancel', () => { rEdit = null; });
-on('reReset', async () => { if (await confirmSheet('Reset routine?', 'Your edits to this built-in routine will be removed.', 'Reset', true)) { db.del('routines', rEdit.id); const id = rEdit.id; rEdit = null; go('#/routine/' + id); } });
+on('reReset', async () => { if (await confirmSheet('Reset routine?', 'Your edits to this built-in routine will be removed.', 'Reset', true)) { D.resetRoutine(rEdit.id); const id = rEdit.id; rEdit = null; go('#/routine/' + id); } });
 on('reSave', () => {
   const r = rEdit; if (!r.name.trim()) return toast('Give the routine a name'); if (!r.items.length) return toast('Add at least one exercise');
   const out = { ...r }; delete out._for; out.name = r.name.trim();
@@ -425,7 +425,7 @@ on('exSave', () => {
   const out = { ...e, name: e.name.trim() }; delete out._for; delete out._notes;
   D.saveExercise(out); D.setMyNotes(out.id, e._notes || ''); exEdit = null; toast('Exercise saved'); go('#/exercise/' + encodeURIComponent(out.id));
 });
-on('exReset', async () => { if (await confirmSheet('Reset exercise?', 'Your edits to this built-in exercise will be removed (your notes stay).', 'Reset', true)) { db.del('exercises', exEdit.id); const id = exEdit.id; exEdit = null; go('#/exercise/' + encodeURIComponent(id)); } });
+on('exReset', async () => { if (await confirmSheet('Reset exercise?', 'Your edits to this built-in exercise will be removed (your notes stay).', 'Reset', true)) { D.resetExercise(exEdit.id); const id = exEdit.id; exEdit = null; go('#/exercise/' + encodeURIComponent(id)); } });
 on('exDelete', async () => { if (await confirmSheet('Delete exercise?', 'Logged sets stay in your history.', 'Delete', true)) { D.saveExercise({ ...D.exercise(exEdit.id), deleted: true }); exEdit = null; go('#/exercises'); } });
 
 // ---------------------------------------------------------------- HISTORY
@@ -487,13 +487,14 @@ export function settings() {
   const st = sync.status(); const url = sync.getUrl(); const pend = sync.pending();
   const eq = D.equipment();
   const persisted = window.__persisted; const packs = D.installedPacks(); const sampleN = D.sampleHistoryCount();
-  const line = !url ? 'Sync is off. Everything is saved on this phone.' : st.syncing ? 'Syncing…' : st.lastError ? `Last attempt failed: ${esc(st.lastError)}` : st.lastOk ? `Last synced ${ago(st.lastOk)}.` : 'Not synced yet.';
+  const line = !url ? 'Sync is off. Everything is saved on this phone.' : st.syncing ? 'Syncing…' : st.lastError ? `Last attempt failed: ${esc(st.lastError)}` : st.lastOk ? `Last synced ${fmtTime(st.lastOk)} (${ago(st.lastOk)}).` : 'Not synced yet.';
   const html = `<div class="hdr"><div><div class="eyebrow">Exercise Log</div><h1>Settings</h1></div></div>
     <div class="section-label">Google Sheet sync (optional)</div>
     <div class="setgroup"><p>Paste the web app URL from your Google Apps Script (see SETUP.md in the app folder). Records are sent in the background, one row per set or session, and retried when you're back online.</p>
       <label class="field"><span>Apps Script web app URL</span><input class="input" type="url" id="syncUrl" value="${esc(url)}" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></label>
       <div class="btn-row"><button class="btn-secondary" data-act="saveSync">Save</button><button class="btn-primary" style="min-height:52px;font-size:17px" data-act="syncNow" ${url ? '' : 'disabled'}>Sync now</button></div>
       <div class="status-line${st.lastError && url ? ' err' : ''}">${line}</div><div class="status-line">${pend} record${pend === 1 ? '' : 's'} waiting.</div>
+      ${url && st.oldScript ? '<div class="status-line err" id="oldScript">Your Apps Script is the old version: logs sync, but exercises, routines and settings don\'t. Paste the new Code.gs and deploy a new version (SETUP.md).</div>' : ''}
       ${url && st.driveError ? `<div class="status-line err" id="driveErr">Couldn't load your programmes from Drive (${esc(st.driveError)}). <button class="txtbtn" data-act="driveLoad">Retry</button></div>` : url && db.kvGet('driveLoaded') ? '<div class="status-line">Programmes loaded from Drive.</div>' : ''}
 </div>
     <div class="section-label">Reminder</div>
@@ -525,7 +526,7 @@ on('saveSync', async () => { const u = document.getElementById('syncUrl').value.
 on('syncNow', async () => { toast('Syncing…'); const r = await sync.syncNow(); toast(r.ok ? `Synced ${r.total} record${r.total === 1 ? '' : 's'}` : r.offline ? 'Offline – will retry' : r.error ? 'Sync failed: ' + r.error : 'Nothing to sync'); go(location.hash); });
 on('saveEquip', () => {
   const kb = document.getElementById('kbList').value.split(',').map(x => num(x)).filter(x => x > 0).sort((a, b) => a - b);
-  db.kvSet('equipment', { kb: kb.length ? kb : [12, 16, 20, 24], dbStep: num(document.getElementById('dbStep').value) || 2, bbStep: num(document.getElementById('bbStep').value) || 2.5, machineStep: num(document.getElementById('machineStep').value) || 2.5, plateStep: 2.5 });
+  D.setSetting('equipment', { kb: kb.length ? kb : [12, 16, 20, 24], dbStep: num(document.getElementById('dbStep').value) || 2, bbStep: num(document.getElementById('bbStep').value) || 2.5, machineStep: num(document.getElementById('machineStep').value) || 2.5, plateStep: 2.5 });
   toast('Equipment saved');
 });
 on('delSample', async () => {

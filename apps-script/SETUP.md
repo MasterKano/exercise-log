@@ -15,6 +15,14 @@ Sync is optional. The app saves everything on your phone first and works fully w
 
 The script creates two tabs, **Sessions** and **Sets**, with headers, one row per session and one row per set. If a record is sent again (after you fix a typo, or after a retry), its row is updated instead of duplicated. Deleted sets stay as rows with `deleted` = TRUE.
 
+## Update to the v2 script (October 2026): readable tabs + exercises, routines and settings sync
+
+1. Open your Google Sheet → **Extensions → Apps Script**.
+2. Select everything in `Code.gs`, delete it, paste in the new `Code.gs` from this folder, click **Save**.
+3. **Deploy → Manage deployments** → select the existing web app → pencil (**Edit**) → **Version: New version** → **Deploy**. Don't make a new deployment: this way the URL stays the same and nothing changes on your phones.
+
+On the next sync the script renames **Sets** to **Log**, puts the readable columns first in **Log** and **Sessions** (all rows kept), and the app fills the new **Exercises**, **Routines** and **Settings** tabs. Until you update, the app keeps syncing your logs as before (Settings shows a note that the script is the old version).
+
 ## Load your full programmes file from Google Drive
 
 The same web app can hand your programmes file to the app, so a new phone gets everything with one tap.
@@ -23,7 +31,7 @@ The same web app can hand your programmes file to the app, so a new phone gets e
 2. **Update the script.** Open the Apps Script project, replace all of `Code.gs` with the new `Code.gs` from this folder, click **Save**.
 3. **Authorise Drive access.** In the toolbar, pick **authorizeDrive** in the function list and click **Run**. Google asks for permission: choose your account → **Advanced → Go to (project name)** → **Allow**. The log should say `Found exercise-programmes-import.json`.
 4. **Redeploy as a new version.** **Deploy → Manage deployments**, select the web app, click the pencil (**Edit**), set **Version: New version**, click **Deploy**. The URL stays the same, so nothing changes in the app.
-5. **Load it.** In the app: **Settings → Google Sheet sync → Load my full file from Drive**. It is merged like a normal import: nothing is duplicated and your own logs stay.
+5. **Load it.** In the app: **the app loads it by itself when you paste the link (Settings → Advanced → Reload programmes from Drive to load it again)**. It is merged like a normal import: nothing is duplicated and your own logs stay.
 
 Check: opening `<your web app URL>?action=import` in a browser should show the file's JSON (with `"ok":true`).
 

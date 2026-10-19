@@ -1,6 +1,6 @@
 // Domain data: seed + user data, queries, hints, summary, CSV.
 import * as db from './db.js';
-import { uid, num, parseRange, weekStart, isoDate, fmtNum } from './util.js';
+import { uid, num, parseRange, weekStart, isoDate, fmtNum, fmtClock } from './util.js';
 import { STARTERS } from './starters.js';
 
 export let SEED = null;
@@ -73,35 +73,45 @@ export const isSeedExercise = (id) => seedEx.has(id);
 export const isSeedRoutine = (id) => seedRt.has(id);
 
 // ---------------- exercises
+// Synced settings + change hook (sync.js sets the hook: any save -> debounced push + pull)
+let hook = () => {}; export const onDataChange = (f) => { hook = f; };
+export const SYNC_KEYS = ['remindDays', 'routineActive', 'rotation', 'equipment', 'exnotes'];
+export function setSetting(k, v) { const at = { ...(db.kvGet('settingsAt', {}) || {}) }; at[k] = Date.now(); db.kvSet('settingsAt', at); const r = db.kvSet(k, v); hook(); return r; }
 export function exercise(id) {
   const o = db.get('exercises', id);
+  if (o && o._reset) return seedEx.get(id) || null;
   if (o && !o.deleted) return o;
   return seedEx.get(id) || (o ? o : null);
 }
 export function allExercises() {
   const out = new Map();
   for (const e of SEED.exercises) out.set(e.id, e);
-  for (const e of db.list('exercises')) { if (e.deleted) out.delete(e.id); else out.set(e.id, e); }
+  for (const e of db.list('exercises')) { if (e._reset) continue; if (e.deleted) out.delete(e.id); else out.set(e.id, e); }
   return [...out.values()];
 }
-export function saveExercise(e) { e.updatedAt = Date.now(); return db.put('exercises', e); }
+export function saveExercise(e) { e.updatedAt = Date.now(); const r = db.put('exercises', e); hook(); return r; }
+export function resetExercise(id) { const r = db.put('exercises', { id, _reset: true, updatedAt: Date.now() }); hook(); return r; }
 export function myNotes(id) { return (db.kvGet('exnotes', {}) || {})[id] || ''; }
-export function setMyNotes(id, txt) { const n = { ...(db.kvGet('exnotes', {}) || {}) }; n[id] = txt; return db.kvSet('exnotes', n); }
+export function setMyNotes(id, txt) { const n = { ...(db.kvGet('exnotes', {}) || {}) }; if ((n[id] || '') === (txt || '')) return; n[id] = txt; return setSetting('exnotes', n); }
 export function equipLabel(eq) { return ({ kb: 'kettlebell', db: 'dumbbell', bb: 'barbell', machine: 'machine/cable', plate: 'plates' })[eq] || ''; }
 
 // ---------------- routines
 export function routine(id) {
   const o = db.get('routines', id);
+  if (o && o._reset) return seedRt.get(id) || null;
   if (o && !o.deleted) return o;
   return seedRt.get(id) || null;
 }
 export function allRoutines() {
   const out = new Map();
   for (const r of SEED.routines) out.set(r.id, r);
-  for (const r of db.list('routines')) { if (r.deleted) out.delete(r.id); else out.set(r.id, r); }
+  for (const r of db.list('routines')) { if (r._reset) continue; if (r.deleted) out.delete(r.id); else out.set(r.id, r); }
   return [...out.values()];
 }
-export function saveRoutine(r) { r.updatedAt = Date.now(); return db.put('routines', r); }
+export function saveRoutine(r) { r.updatedAt = Date.now(); const x = db.put('routines', r); hook(); return x; }
+// tombstones so deletes / resets sync: deleted user routine, or _reset for a built-in one
+export function deleteRoutine(id) { const r = db.put('routines', { ...(db.get('routines', id) || routine(id) || { id }), deleted: true, updatedAt: Date.now() }); hook(); return r; }
+export function resetRoutine(id) { const r = db.put('routines', { id, _reset: true, updatedAt: Date.now() }); hook(); return r; }
 export function routineCount(r) {
   if (r.kind === 'circuit' || r.kind === 'straight') return (r.items || []).length;
   if (r.kind === 'program') return r.blocks.reduce((a, b) => a + (b.items ? b.items.length : 1), 0);
@@ -126,21 +136,10 @@ export function routineMeta(r) {
   const n = routineCount(r); return `${r.subtitle ? r.subtitle + ' · ' : ''}${n} exercise${n === 1 ? '' : 's'}`;
 }
 export const getRotation = () => (db.kvGet('rotation', null) || SEED.rotation || []).filter(id => routine(id));
-export const setRotation = (ids) => db.kvSet('rotation', ids);
-// Active routines (stored per device in kv 'routineActive' = { id: true|false } overrides; kv is not part of Sheet sync).
-// Default when not set: logged in the last 30 days, in the rotation, or in the programme of the latest session; if that gives none, all.
-function defaultActiveSet() {
-  const cut = Date.now() - 30 * 864e5; const ss = sessions(); const s = new Set();
-  for (const x of ss) if (x.startedAt >= cut && x.routineId) s.add(x.routineId);
-  for (const id of (db.kvGet('rotation', null) || SEED.rotation || [])) s.add(id);
-  const lr = ss[0] && routine(ss[0].routineId); if (lr && lr.kind === 'program') for (const d of programme(lr.programme)?.days || []) s.add(d);
-  return s;
-}
-export function isActive(id) {
-  const o = (db.kvGet('routineActive', {}) || {})[id]; if (o != null) return !!o;
-  const s = defaultActiveSet(); return !s.size || s.has(id);
-}
-export function setActive(id, on) { const m = { ...(db.kvGet('routineActive', {}) || {}) }; m[id] = !!on; return db.kvSet('routineActive', m); }
+export const setRotation = (ids) => setSetting('rotation', ids);
+// Active routines: kv 'routineActive' = { id: false } for routines you switched off (synced as a setting). Everything else is active.
+export function isActive(id) { return (db.kvGet('routineActive', {}) || {})[id] !== false; }
+export function setActive(id, on) { const m = { ...(db.kvGet('routineActive', {}) || {}) }; if (on) delete m[id]; else m[id] = false; return setSetting('routineActive', m); }
 // Next workout: the routine after the last one done in the rotation, skipping inactive ones.
 export function nextInRotation() {
   const rot = getRotation().filter(isActive); if (!rot.length) return null;
@@ -483,14 +482,16 @@ export function sessionRow(s) {
   return { record_type: 'session', id: s.id, session_id: s.id, date: isoDate(s.startedAt), start_time: new Date(s.startedAt).toISOString(), routine: s.routineName,
     programme_week: s.week ? 'S' + s.week : '', duration_s: s.durationSec, rounds_done: s.roundsDone ?? s.rounds, effort: s.effort, knee_before: s.kneeBefore,
     knee_after: s.kneeAfter, series: s.seriesName, session_no: s.seriesNum, title: s.title,
-    ladder: s.ladder ? s.ladder.map(l => `${l.name}: ${l.timeSec}s${l.weight ? ' @' + l.weight + 'kg' : ''} (${l.rungs}/${l.top})`).join('; ') : '', notes: s.notes };
+    ladder: s.ladder ? s.ladder.map(l => `${l.name}: ${l.timeSec}s${l.weight ? ' @' + l.weight + 'kg' : ''} (${l.rungs}/${l.top})`).join('; ') : '', notes: s.notes,
+    duration: s.durationSec ? "'" + fmtClock(s.durationSec) : '' };
 }
 export function setRow(st) {
   const sess = db.get('sessions', st.sessionId) || {};
   return { record_type: 'set', id: st.id, session_id: st.sessionId, date: isoDate(st.date || sess.startedAt), start_time: sess.startedAt ? new Date(sess.startedAt).toISOString() : '',
     routine: st.routineName || sess.routineName, programme_week: (st.week || sess.week) ? 'S' + (st.week || sess.week) : '', block: st.block, exercise: st.exerciseName,
     exercise_id: st.exerciseId, swapped_from: st.swappedFrom ? (exercise(st.swappedFrom)?.name || st.swappedFrom) : '', set_no: st.setNo, round: st.round,
-    weight_kg: st.weight, reps: st.reps, rir: st.rir, rpe: st.rpe, time_s: st.timeSec, flights: st.flights, avg_hr: st.hr, variant: st.variant, notes: st.note };
+    weight_kg: st.weight, reps: st.reps, rir: st.rir, rpe: st.rpe, time_s: st.timeSec, flights: st.flights, avg_hr: st.hr, variant: st.variant, notes: st.note,
+    session: sess.title && sess.title !== sess.routineName ? `${sess.routineName} · ${sess.title}` : (sess.routineName || st.routineName || ''), time: st.timeSec != null ? "'" + fmtClock(st.timeSec) : '' };
 }
 export function buildCSV() {
   const rows = [CSV_COLS.join(',')];

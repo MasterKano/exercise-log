@@ -877,7 +877,9 @@ on('exMenu', async (el) => {
   const b = blk(el.dataset.b); const it = b.items.find(i => i.key === el.dataset.i); const ex = D.exercise(it.exId);
   const items = [{ label: 'Cues & video', v: 'cue', icon: P.info }, { label: 'Swap for today only', v: 'swap', icon: P.swap }, { label: 'Exercise history', v: 'hist', icon: TAB_HIST }];
   if (it.origExId) items.push({ label: `Undo swap (back to ${D.exercise(it.origExId).name})`, v: 'unswap', icon: P.swap });
-  items.push({ label: 'Remove from today', v: 'remove', danger: true, icon: P.trash });
+  const ticked = Object.keys(A.vals).some(k => k.startsWith(b.key + '|' + it.key + '|') && A.vals[k].done);
+  if (!ticked) items.splice(1, 0, { label: 'Skip today', v: 'remove', icon: P.x });
+  else items.push({ label: 'Remove from today', v: 'remove', danger: true, icon: P.trash });
   const v = await actionSheet(ex.name, items);
   if (v === 'cue') cueFor(b, it);
   else if (v === 'hist') go('#/exercise/' + encodeURIComponent(it.exId));
@@ -894,7 +896,7 @@ on('exMenu', async (el) => {
     if (has && !(await confirmSheet('Remove exercise?', 'Its ticked sets for today will be deleted.', 'Remove', true))) return;
     for (const k of Object.keys(A.vals)) if (k.startsWith(b.key + '|' + it.key + '|')) { const s = A.vals[k].setId && db.get('sets', A.vals[k].setId); if (s) D.deleteSet(s); delete A.vals[k]; }
     b.items = b.items.filter(x => x !== it); if (!b.items.length) A.blocks = A.blocks.filter(x => x !== b);
-    persist(true); renderFn();
+    persist(true); renderFn(); if (!has) toast(`Skipped ${ex.name}`);
   }
 });
 on('addExercise', async () => {
@@ -935,8 +937,9 @@ on('pauseToggle', () => {
   else A.pausedAt = now();
   persist(true); renderFn();
 });
-on('endWorkout', async () => {
+on('endWorkout', async (el) => {
   const anyDone = Object.values(A.vals).some(v => v.done) || (A.lad && A.lad.seqs.some(s => s.startAt)) || !!(A.iv && A.iv.startAt);
+  if (anyDone && el && el.closest('.finish')) return finishFlow();
   const v = await actionSheet(anyDone ? 'End workout' : 'Nothing logged yet', [
     ...(anyDone ? [{ label: 'Finish & save', v: 'finish', icon: P.check }] : []), { label: 'Discard workout', v: 'discard', danger: true, icon: P.trash }]);
   if (v === 'finish') finishFlow();

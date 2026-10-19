@@ -2,7 +2,7 @@
 // then GETs ?action=pull to merge remote changes (last-updatedAt-wins by id).
 // Uses Content-Type text/plain so the browser sends a "simple" request (no CORS preflight).
 import * as db from './db.js';
-import { setRow, sessionRow, importPack, isPack } from './data.js';
+import { setRow, sessionRow, importPack, isPack, SEED, allExercises, allRoutines, isActive, SYNC_KEYS, onDataChange } from './data.js';
 
 let busy = false, timer = null, listeners = new Set();
 export const getUrl = () => db.kvGet('syncUrl', '');
@@ -85,6 +85,68 @@ function setFromPull(r) {
   };
 }
 
+// ---- v2 tabs: Exercises / Routines / Settings (newest updated_at wins, tombstones for deletes)
+// kv 'cfgSent' = { 'ex:<id>': updatedAt, 'rt:<id>': …, 'st:<key>': … } of what the Sheet already has.
+const iso = (t) => new Date(t || 0).toISOString();
+function cfgItems() {
+  const out = [];
+  const exIds = new Set([...SEED.exercises.map(e => e.id), ...db.list('exercises').map(e => e.id)]);
+  const notes = db.kvGet('exnotes', {}) || {};
+  for (const id of exIds) {
+    const rec = db.get('exercises', id) || SEED.exercises.find(e => e.id === id); const seed = SEED.exercises.find(e => e.id === id);
+    const show = rec._reset ? seed || rec : rec;
+    out.push({ k: 'ex:' + id, tab: 'exercises', ts: rec.updatedAt || 0, row: { id, name: show.name || id, fields: (show.fields || []).join(', '), equipment: show.equip || '', group: show.group || '',
+      notes: notes[id] || '', json: JSON.stringify(rec), deleted: !!rec.deleted, updated_at: iso(rec.updatedAt) } });
+  }
+  const actAt = (db.kvGet('settingsAt', {}) || {}).routineActive || 0;   // active column is display: re-sent when a flag changes
+  const rtIds = new Set([...SEED.routines.map(r => r.id), ...db.list('routines').map(r => r.id)]);
+  for (const id of rtIds) {
+    const rec = db.get('routines', id) || SEED.routines.find(r => r.id === id); const show = rec._reset ? SEED.routines.find(r => r.id === id) || rec : rec;
+    out.push({ k: 'rt:' + id, tab: 'routines', ts: Math.max(rec.updatedAt || 0, actAt), row: { id, name: show.name || id, kind: show.kind || '', subtitle: show.subtitle || '', active: isActive(id),
+      json: JSON.stringify(rec), deleted: !!rec.deleted, updated_at: iso(rec.updatedAt) } });
+  }
+  const at = db.kvGet('settingsAt', {}) || {};
+  for (const key of SYNC_KEYS) { const v = db.kvGet(key, null); if (v == null && !at[key]) continue;
+    out.push({ k: 'st:' + key, tab: 'settings', ts: at[key] || 0, row: { id: 'setting:' + key, key, value: JSON.stringify(v), deleted: false, updated_at: iso(at[key]) } }); }
+  return out;
+}
+function cfgPending() { const sent = db.kvGet('cfgSent', {}) || {}; return cfgItems().filter(x => !(x.k in sent) || x.ts > sent[x.k]); }
+export const cfgPendingCount = () => cfgPending().length;
+export function markRoutineDirty(id) { const s = { ...(db.kvGet('cfgSent', {}) || {}) }; delete s['rt:' + id]; db.kvSet('cfgSent', s); }
+async function pushCfg(url) {
+  const st = status(); if (st.oldScript && Date.now() - (st.oldScriptAt || 0) < 6 * 36e5) return 0;   // old Code.gs: retry every 6 h
+  const items = cfgPending(); if (!items.length) return 0;
+  const body = { app: 'exlog', v: 2, sessions: [], sets: [], exercises: [], routines: [], settings: [] };
+  for (const x of items) body[x.tab].push(x.row);
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body), redirect: 'follow' });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const j = await res.json(); if (!j.ok) throw new Error(j.error || 'Sheet rejected the data');
+  if (j.v !== 2 || !Array.isArray(j.exercises)) { setStatus({ oldScript: true, oldScriptAt: Date.now() }); return 0; }
+  const ok = new Set([...(j.exercises || []), ...(j.routines || []), ...(j.settings || [])].map(String));
+  const sent = { ...(db.kvGet('cfgSent', {}) || {}) };
+  for (const x of items) if (ok.has(String(x.row.id))) sent[x.k] = x.ts;
+  db.kvSet('cfgSent', sent); setStatus({ oldScript: false });
+  return ok.size;
+}
+let pulledCfg = 0;
+function applyCfg(j) {
+  const sent = { ...(db.kvGet('cfgSent', {}) || {}) }; let n = 0;
+  const parse = (s) => { try { return JSON.parse(String(s)); } catch (e) { return null; } };
+  for (const [tab, store, pre] of [['exercises', 'exercises', 'ex:'], ['routines', 'routines', 'rt:']]) {
+    for (const r of j[tab] || []) {
+      if (!r || !r.id) continue; const ts = parseTs(r.updated_at || r.updatedAt); const rec = parse(r.json); if (!rec || !ts) continue;
+      const cur = db.get(store, String(r.id)); if (ts <= ((cur && cur.updatedAt) || 0)) continue;
+      db.put(store, { ...rec, id: String(r.id), deleted: !!(r.deleted || rec.deleted), updatedAt: ts }); sent[pre + r.id] = ts; n++;
+    }
+  }
+  const at = { ...(db.kvGet('settingsAt', {}) || {}) };
+  for (const r of j.settings || []) {
+    if (!r || !SYNC_KEYS.includes(r.key)) continue; const ts = parseTs(r.updated_at || r.updatedAt); if (!ts || ts <= (at[r.key] || 0)) continue;
+    const v = parse(r.value); db.kvSet(r.key, v); at[r.key] = ts; sent['st:' + r.key] = ts; n++;
+  }
+  db.kvSet('settingsAt', at); db.kvSet('cfgSent', sent); pulledCfg += n; return n;
+}
+
 function mergePulled(store, mapped) {
   const cur = db.get(store, mapped.id);
   if (!cur) { db.put(store, mapped); return 'add'; }
@@ -113,9 +175,10 @@ export async function pullNow() {
     if (!r || r.id == null || r.id === '') continue;
     const m = mergePulled('sets', setFromPull(r)); if (m === 'add') added++; else if (m === 'update') updated++;
   }
-  const pulledAt = new Date().toISOString();
+  const cfgN = applyCfg(j);
+  const pulledAt = j.now || new Date().toISOString();   // v2 script: server time (rows are filtered by server synced_at)
   db.kvSet('lastPulledAt', pulledAt);
-  return { ok: true, added, updated, pulledAt, n: (j.sessions || []).length + (j.sets || []).length };
+  return { ok: true, added, updated, cfg: cfgN, pulledAt, n: (j.sessions || []).length + (j.sets || []).length };
 }
 
 export async function syncNow() {
@@ -149,7 +212,8 @@ export async function syncNow() {
       }
       if (!okIds.size) throw new Error('Nothing acknowledged');
     }
-    const pulled = await pullNow();
+    const pulled = await pullNow();   // pull first so exercises / routines / settings from other devices are applied before ours are sent
+    total += await pushCfg(url);
     setStatus({ syncing: false, lastOk: Date.now(), lastError: null, lastCount: total, lastPull: pulled.pulledAt || null, lastPullN: pulled.n || 0 });
     return { ok: true, total, pulled };
   } catch (e) {
@@ -159,6 +223,7 @@ export async function syncNow() {
 }
 let debounce = null;
 // Always run sync when a URL is set (push pending, then pull) — app open, back online, after workout, Sync now.
+onDataChange(() => soon(3000));
 export function soon(ms = 2500) { clearTimeout(debounce); debounce = setTimeout(() => { if (getUrl()) syncNow(); }, ms); }
 export function start() {
   window.addEventListener('online', () => soon(500));
