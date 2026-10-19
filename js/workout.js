@@ -673,6 +673,7 @@ async function finishFlow() {
   if (!k) return;
   const L = A.lad;
   if (L) L.seqs.forEach(s => { if (s.startAt && !s.done) finishSeq(s); });
+  if (A.kind === 'quick') A.title = 'Quick log · ' + [...new Set(A.blocks.flatMap(b => b.items.map(it => D.exercise(it.exId)?.name)).filter(Boolean))].join(', ');
   const sess = { id: A.id, routineId: A.routineId, routineName: A.title, kind: A.kind, programme: A.programme, week: A.week, startedAt: A.startedAt, endedAt: now(),
     durationSec: Math.round(elapsedSec()), kneeBefore: A.kneeBefore, kneeAfter: k.knee, notes: k.notes || '' };
   const circ = A.blocks.find(b => b.type === 'circuit');
@@ -786,8 +787,47 @@ export function pickExercise(title = 'Choose exercise') {
   const all = D.allExercises().sort((a, b) => a.name.localeCompare(b.name));
   const html = `<div class="sh-title">${esc(title)}</div><div class="searchbox">${ic(P.search, 18, '#8e8e93')}<input type="search" placeholder="Search exercises" data-filter="pick" autocomplete="off"></div>
     <div class="card list nobadge pick" style="margin:0">${all.map(e => `<button class="row" data-act="resolveSheet" data-v="${esc(e.id)}" data-name="${esc(e.name.toLowerCase())}"><div class="t"><b>${esc(e.name)}</b><span>${esc(e.group || e.source || 'My exercises')}</span></div></button>`).join('')}</div>
-    <button class="btn-secondary mt12" data-act="resolveSheet" data-v="__new">${ic(P.plus, 18)} New exercise</button>`;
+    <button class="btn-secondary mt12" data-act="pickNew">${ic(P.plus, 18)} New exercise</button>`;
   return ask(html, { full: true });
+}
+on('pickNew', () => closeSheet('__new:' + (document.querySelector('.sheet-wrap.in [data-filter=pick]')?.value || '').trim()));
+// Inline "New exercise": name + type (weight × reps by default); saved to your exercises. Resolves to the exercise id or null.
+const NEW_TYPES = { wr: ['weight', 'reps'], r: ['reps'], t: ['time'] };
+export async function newExerciseInline(name = '') {
+  const v = await ask(`<div class="sh-title">New exercise</div><label class="field"><span>Name</span><input class="input" id="newExName" value="${esc(name)}" placeholder="e.g. Bench press" autocomplete="off"></label>
+    <button class="btn-primary" data-act="newExType" data-t="wr">Weight × reps</button><div class="btn-row mt8"><button class="btn-secondary" data-act="newExType" data-t="r">Reps only</button><button class="btn-secondary" data-act="newExType" data-t="t">Time</button></div>
+    <button class="btn-secondary mt8" data-act="resolveSheet" data-v="">Cancel</button>`);
+  if (!v) return null;
+  const { n, t } = JSON.parse(v);
+  const same = D.allExercises().find(e => e.name.toLowerCase() === n.toLowerCase()); if (same) return same.id;
+  const id = 'my-' + n.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) + '-' + Date.now().toString(36).slice(-4);
+  D.saveExercise({ id, name: n, fields: NEW_TYPES[t] || NEW_TYPES.wr, equip: null, video: null, rehab: null, cues: [], eachSide: false, srcNotes: [], source: 'My exercises', rest: 90, tempo: null, variants: [], rangeKg: null, group: 'My exercises' });
+  sync.soon(); return id;
+}
+on('newExType', (el) => { const n = document.getElementById('newExName').value.trim(); if (!n) return toast('Type a name'); closeSheet(JSON.stringify({ n, t: el.dataset.t })); });
+export async function pickOrCreate(title) {
+  let id = await pickExercise(title); if (!id) return null;
+  if (id.startsWith('__new')) id = await newExerciseInline(id.slice(6));
+  return id;
+}
+// Quick log: a one-off session for any exercise(s). routineId stays null, so the rotation doesn't move; it counts as training.
+export async function startQuick() {
+  unlockAudio();
+  if (A) {
+    const v = await actionSheet('A workout is already in progress', [{ label: 'Resume it', v: 'resume' }, { label: 'Discard it and start new', v: 'discard', danger: true }]);
+    if (v === 'resume') return go('#/workout');
+    if (v !== 'discard') return;
+    discardActive();
+  }
+  const id = await pickOrCreate('Quick log: choose exercise'); if (!id) return;
+  A = { id: uid('ses'), routineId: null, kind: 'quick', name: 'Quick log', subtitle: '', title: 'Quick log', programme: null, week: null, startedAt: now(), pausedTotal: 0, pausedAt: null,
+    kneeBefore: null, vals: {}, blocks: [], ui: { open: {}, rounds: {} }, rest: null, sw: null };
+  addOneOff(id); persist(true); go('#/workout');
+}
+function addOneOff(id) {
+  const ex = D.exercise(id); const n = A.blocks.length;
+  const b = { key: 'x' + Date.now().toString(36) + n, type: 'single', label: A.kind === 'quick' ? String.fromCharCode(65 + n) : '+', rounds: 3, oneOff: true, items: [mkItem('i0', id, A.kind === 'quick' ? String.fromCharCode(65 + n) : '+', null, { rest: ex.rest || 90 })] };
+  A.blocks.push(b); prefillBlock(b); return b;
 }
 
 // ---------------------------------------------------------------- actions
@@ -843,7 +883,7 @@ on('exMenu', async (el) => {
   else if (v === 'hist') go('#/exercise/' + encodeURIComponent(it.exId));
   else if (v === 'swap' || v === 'unswap') {
     let nid = it.origExId;
-    if (v === 'swap') { nid = await pickExercise('Swap for today'); if (!nid) return; if (nid === '__new') return go('#/exercise-edit/new'); }
+    if (v === 'swap') { nid = await pickOrCreate('Swap for today'); if (!nid) return; }
     if (!nid || nid === it.exId) return;
     it.origExId = v === 'unswap' ? null : (it.origExId || it.exId); it.exId = nid; it.fields = null;
     it.last = snapshotLast(nid, A.routineId, A.week);
@@ -858,10 +898,8 @@ on('exMenu', async (el) => {
   }
 });
 on('addExercise', async () => {
-  const id = await pickExercise('Add for today'); if (!id) return; if (id === '__new') return go('#/exercise-edit/new');
-  const ex = D.exercise(id);
-  const b = { key: 'x' + Date.now().toString(36), type: 'single', label: '+', rounds: 3, oneOff: true, items: [mkItem('i0', id, '+', null, { rest: ex.rest || 90 })] };
-  A.blocks.push(b); prefillBlock(b); persist(true); renderFn();
+  const id = await pickOrCreate(A.kind === 'quick' ? 'Add exercise' : 'Add for today'); if (!id || !A) return;
+  const b = addOneOff(id); persist(true); renderFn();
   setTimeout(() => document.querySelector(`[data-blk="${b.key}"]`)?.scrollIntoView({ block: 'center' }), 50);
 });
 function addRoundTo(b) {

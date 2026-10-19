@@ -51,7 +51,7 @@ export function today() {
   if (!r) {
     const html = `<div class="hdr"><div><div class="eyebrow">${esc(fmtLong(Date.now()))}</div><h1>Today</h1></div></div>
       <div class="card hero"><div class="eyebrow">No routines yet</div><div class="sub" style="margin:6px 0 16px">Paste your sync link in Settings: your programmes and history load automatically.</div>
-      <a class="btn-primary" href="#/settings">Settings</a><a class="btn-secondary mt8" href="#/routine-edit/new">${ic(P.plus, 18)} New routine</a></div>`;
+      <a class="btn-primary" href="#/settings">Settings</a><button class="btn-secondary mt8 quicklog" data-act="quickLog">${ic(P.plus, 18)} Quick log</button><a class="btn-secondary mt8" href="#/routine-edit/new">${ic(P.plus, 18)} New routine</a></div>`;
     return { html, tab: 'Today' };
   }
   const last = D.sessions()[0];
@@ -75,6 +75,7 @@ export function today() {
   } else hero += `<div style="height:16px"></div>`;
   hero += pickId === sugg ? `<button class="btn-primary startnext" data-act="startPicked" data-r="${r.id}" style="min-height:60px;font-size:19px">${ic(P.play, 20, 'none', 0, '#000')}Start next: ${esc(r.name)}</button>` : `<button class="btn-primary" data-act="startPicked" data-r="${r.id}">${ic(P.play, 18, 'none', 0, '#000')}Start</button>`;
   if (r.kind === 'followalong') hero += `<a class="btn-secondary mt8" href="#/series/${r.series}">Choose another session</a>`;
+  hero += `<button class="btn-secondary mt8 quicklog" data-act="quickLog" style="min-height:52px;font-size:17px">${ic(P.plus, 18)} Quick log</button>`;
 
   const st = sync.status(); const pend = sync.pending();
   let syncLine;
@@ -99,6 +100,7 @@ export function today() {
     <div class="card list" style="border-radius:16px">${rows}</div>`;
   return { html, tab: 'Today' };
 }
+on('quickLog', () => W.startQuick());
 on('homePick', (el) => { homePick = el.dataset.r; window.scrollTo(0, 0); go('#/today'); });
 on('homeRounds', (el) => { homeRounds[el.dataset.r] = +el.dataset.n; go(location.hash); });
 on('setWeek', (el) => { D.setProgWeek(el.dataset.p, +el.dataset.n); go(location.hash); });
@@ -226,7 +228,7 @@ export function onRoutineEditInput(el) {
 }
 on('reMove', (el) => { const a = rEdit.items; const i = +el.dataset.i, j = i + +el.dataset.d; if (j < 0 || j >= a.length) return; [a[i], a[j]] = [a[j], a[i]]; go(location.hash); });
 on('reDel', (el) => { rEdit.items.splice(+el.dataset.i, 1); go(location.hash); });
-on('reAdd', async () => { const id = await W.pickExercise('Add to routine'); if (!id) return; if (id === '__new') return go('#/exercise-edit/new'); const ex = D.exercise(id); rEdit.items.push({ ex: id, sets: 3, reps: '', rest: ex.rest || null, eachSide: ex.eachSide }); go(location.hash); });
+on('reAdd', async () => { const id = await W.pickOrCreate('Add to routine'); if (!id) return; const ex = D.exercise(id); rEdit.items.push({ ex: id, sets: 3, reps: '', rest: ex.rest || null, eachSide: ex.eachSide }); go(location.hash); });
 on('reCancel', () => { rEdit = null; });
 on('reReset', async () => { if (await confirmSheet('Reset routine?', 'Your edits to this built-in routine will be removed.', 'Reset', true)) { db.del('routines', rEdit.id); const id = rEdit.id; rEdit = null; go('#/routine/' + id); } });
 on('reSave', () => {
